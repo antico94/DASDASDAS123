@@ -1,0 +1,10 @@
+# requirements.txt
+sqlalchemy==2.0.23
+pyodbc==4.0.39
+pandas==2.1.3
+numpy==1.26.2
+MetaTrader5==5.0.45
+dependency-injector==4.41.0
+python-dateutil==2.8.2
+pytest==7.4.3
+pytest-mock==3.12.0
