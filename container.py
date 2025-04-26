@@ -1,6 +1,6 @@
 # container.py (updated)
 from dependency_injector import containers, providers
-from logging.logger import app_logger
+from custom_logging.logger import app_logger
 from data.repository import (
     OHLCDataRepository,
     StrategySignalRepository,
@@ -11,9 +11,9 @@ from mt5_connector.connection import MT5Connector
 from mt5_connector.data_fetcher import MT5DataFetcher
 from risk_management.position_sizing import PositionSizer
 from risk_management.risk_validator import RiskValidator
-from execution.order_manager import OrderManager
-from execution.trailing_stop import TrailingStopManager
-from strategies.moving_average import MovingAverageStrategy
+from execution.order_manager import EnhancedOrderManager
+from execution.trailing_stop import EnhancedTrailingStopManager
+from strategies.moving_average import EnhancedMovingAverageStrategy
 from strategies.breakout import BreakoutStrategy
 from strategies.range_bound import RangeBoundStrategy
 from strategies.momentum_scalping import MomentumScalpingStrategy
@@ -56,7 +56,7 @@ class Container(containers.DeclarativeContainer):
 
     # Order execution
     order_manager = providers.Singleton(
-        OrderManager,
+        EnhancedOrderManager,
         connector=mt5_connector,
         trade_repository=trade_repository,
         signal_repository=signal_repository,
@@ -65,7 +65,7 @@ class Container(containers.DeclarativeContainer):
     )
 
     trailing_stop_manager = providers.Singleton(
-        TrailingStopManager,
+        EnhancedTrailingStopManager,
         connector=mt5_connector,
         trade_repository=trade_repository,
         data_fetcher=data_fetcher
@@ -73,7 +73,7 @@ class Container(containers.DeclarativeContainer):
 
     # Strategies
     moving_average_strategy = providers.Factory(
-        MovingAverageStrategy,
+        EnhancedMovingAverageStrategy,
         symbol=config.symbol,
         timeframe=config.ma_timeframe,
         fast_period=config.ma_fast_period,

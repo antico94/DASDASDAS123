@@ -5,7 +5,7 @@ import time
 import signal
 import argparse
 from datetime import datetime, timedelta
-from logging.logger import app_logger
+from custom_logging.logger import app_logger
 from config import Config
 from container import Container
 from data.db_session import DatabaseSession
@@ -181,7 +181,6 @@ def run_strategies():
     return len(generated_signals)
 
 
-
 def process_trades():
     """Process pending signals and manage open trades."""
     try:
@@ -276,8 +275,6 @@ def main():
         app_logger.info(f"{Config.APP_NAME} shutdown complete")
 
     return 0
-
-
 
 
 if __name__ == "__main__":

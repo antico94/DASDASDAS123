@@ -1,7 +1,7 @@
 # data/repository.py
 from datetime import datetime, timedelta
 from sqlalchemy import func, desc
-from logging.logger import app_logger
+from custom_logging.logger import app_logger
 from data.db_session import DatabaseSession
 from data.models import OHLCData, StrategySignal, Trade, AccountSnapshot
 

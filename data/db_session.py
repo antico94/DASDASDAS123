@@ -3,7 +3,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, scoped_session
 from config import Config
-from logging.logger import app_logger
+from custom_logging.logger import app_logger
 
 # Create base class for all models
 Base = declarative_base()
