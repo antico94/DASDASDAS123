@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta
-from logging.logger import app_logger
+from custom_logging.logger import app_logger
 from mt5_connector.connection import MT5Connector
 from data.models import OHLCData
 from data.db_session import DatabaseSession
@@ -89,13 +89,13 @@ class MT5DataFetcher:
                 symbol=symbol,
                 timeframe=timeframe,
                 timestamp=time_utc,
-                open=rate['open'],
-                high=rate['high'],
-                low=rate['low'],
-                close=rate['close'],
-                volume=rate['real_volume'],
-                tick_volume=rate['tick_volume'],
-                spread=rate['spread']
+                open=float(rate['open']),
+                high=float(rate['high']),
+                low=float(rate['low']),
+                close=float(rate['close']),
+                volume=float(rate['real_volume']),
+                tick_volume=int(rate['tick_volume']),
+                spread=int(rate['spread'])
             )
 
             ohlc_data.append(candle)
@@ -157,13 +157,13 @@ class MT5DataFetcher:
                 symbol=symbol,
                 timeframe=timeframe,
                 timestamp=time_utc,
-                open=rate['open'],
-                high=rate['high'],
-                low=rate['low'],
-                close=rate['close'],
-                volume=rate['real_volume'],
-                tick_volume=rate['tick_volume'],
-                spread=rate['spread']
+                open=float(rate['open']),
+                high=float(rate['high']),
+                low=float(rate['low']),
+                close=float(rate['close']),
+                volume=float(rate['real_volume']),
+                tick_volume=int(rate['tick_volume']),
+                spread=int(rate['spread'])
             )
 
             ohlc_data.append(candle)

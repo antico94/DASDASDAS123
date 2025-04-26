@@ -1,7 +1,7 @@
 # execution/enhanced_trailing_stop.py
 import json
 import MetaTrader5 as mt5
-from logging.logger import app_logger
+from custom_logging.logger import app_logger
 from mt5_connector.connection import MT5Connector
 from data.repository import TradeRepository
 from mt5_connector.data_fetcher import MT5DataFetcher

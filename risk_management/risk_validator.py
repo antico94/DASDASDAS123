@@ -1,6 +1,6 @@
 # risk_management/risk_validator.py
 from datetime import datetime, timedelta
-from logging.logger import app_logger
+from custom_logging.logger import app_logger
 from mt5_connector.connection import MT5Connector
 from data.repository import TradeRepository, AccountSnapshotRepository
 

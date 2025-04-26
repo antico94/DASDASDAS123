@@ -10,18 +10,48 @@ from config import Config
 from container import Container
 from data.db_session import DatabaseSession
 from data.models import AccountSnapshot
-from mt5_connector.connection import MT5Connector
-from mt5_connector.data_fetcher import MT5DataFetcher
 
-# Initialize container
+
 container = Container()
 container.config.from_dict({
+    # General settings
     "app_name": Config.APP_NAME,
     "version": Config.VERSION,
     "symbol": Config.SYMBOL,
+
+    # Moving Average Strategy settings
     "ma_timeframe": Config.MA_TIMEFRAME,
     "ma_fast_period": Config.MA_FAST_PERIOD,
-    "ma_slow_period": Config.MA_SLOW_PERIOD
+    "ma_slow_period": Config.MA_SLOW_PERIOD,
+
+    # Breakout Strategy settings
+    "bo_timeframe": Config.BO_TIMEFRAME,
+    "bo_lookback_periods": Config.BO_LOOKBACK_PERIODS,
+    "bo_min_range_bars": Config.BO_MIN_RANGE_BARS,
+    "bo_volume_threshold": Config.BO_VOLUME_THRESHOLD,
+
+    # Range-Bound Strategy settings
+    "rb_timeframe": Config.RB_TIMEFRAME,
+    "rb_lookback_periods": Config.RB_LOOKBACK_PERIODS,
+    "rb_min_range_bars": Config.RB_MIN_RANGE_BARS,
+    "rb_rsi_period": Config.RB_RSI_PERIOD,
+    "rb_rsi_overbought": Config.RB_RSI_OVERBOUGHT,
+    "rb_rsi_oversold": Config.RB_RSI_OVERSOLD,
+    "rb_adx_period": Config.RB_ADX_PERIOD,
+    "rb_adx_threshold": Config.RB_ADX_THRESHOLD,
+
+    # Momentum Scalping Strategy settings
+    "ms_timeframe": Config.MS_TIMEFRAME,
+    "ms_ema_period": Config.MS_EMA_PERIOD,
+    "ms_macd_fast": Config.MS_MACD_FAST,
+    "ms_macd_slow": Config.MS_MACD_SLOW,
+    "ms_macd_signal": Config.MS_MACD_SIGNAL,
+
+    # Ichimoku Strategy settings
+    "ic_timeframe": Config.IC_TIMEFRAME,
+    "ic_tenkan_period": Config.IC_TENKAN_PERIOD,
+    "ic_kijun_period": Config.IC_KIJUN_PERIOD,
+    "ic_senkou_b_period": Config.IC_SENKOU_B_PERIOD
 })
 
 # Global flag for the main loop

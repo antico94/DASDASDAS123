@@ -1,5 +1,5 @@
 # risk_management/position_sizing.py
-from logging.logger import app_logger
+from custom_logging.logger import app_logger
 from mt5_connector.connection import MT5Connector
 
 

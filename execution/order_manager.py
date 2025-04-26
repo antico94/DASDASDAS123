@@ -2,7 +2,7 @@
 import json
 import time
 from datetime import datetime
-from logging.logger import app_logger
+from custom_logging.logger import app_logger
 from mt5_connector.connection import MT5Connector
 from data.repository import TradeRepository, StrategySignalRepository
 from data.models import Trade
@@ -63,6 +63,7 @@ class EnhancedOrderManager:
         self.logger.info(f"Processed {processed_count} signals")
         return processed_count
 
+    # execution/order_manager.py - _execute_signal method
     def _execute_signal(self, signal):
         """Execute a trading signal with enhanced trade management.
 
@@ -325,3 +326,108 @@ class EnhancedOrderManager:
         except Exception as e:
             self.logger.error(f"Error placing order: {str(e)}")
             return False
+
+    def _execute_close_signal(self, signal, metadata):
+        """Execute a close signal to exit an existing position.
+
+        Args:
+            signal (StrategySignal): The close signal
+            metadata (dict): Signal metadata
+
+        Returns:
+            bool: True if executed successfully, False otherwise
+        """
+        self.logger.info(f"Executing CLOSE signal for {signal.symbol}")
+
+        try:
+            # Get the positions to close
+            positions = self.connector.get_positions(signal.symbol)
+
+            if not positions:
+                self.logger.warning(f"No open positions found for {signal.symbol} to close")
+                return False
+
+            # Extract position filter criteria from metadata if provided
+            strategy_filter = metadata.get('strategy', None)
+            ticket_filter = metadata.get('ticket', None)
+
+            closed_count = 0
+
+            for position in positions:
+                # Apply filters if specified
+                if ticket_filter and position['ticket'] != ticket_filter:
+                    continue
+
+                if strategy_filter and strategy_filter not in position['comment']:
+                    continue
+
+                # Close the position
+                close_result = self.connector.close_position(position['ticket'])
+
+                # Record the trade update in database
+                if close_result:
+                    # Find the trade record and update it
+                    trades = self.trade_repository.get_open_trades(symbol=signal.symbol)
+                    for trade in trades:
+                        # Match by ticket number if included in comment
+                        if str(position['ticket']) in trade.comment:
+                            trade.close_price = close_result['close_price']
+                            trade.close_time = datetime.utcnow()
+                            trade.profit = close_result['profit']
+                            self.trade_repository.update(trade)
+                            break
+
+                    self.logger.info(
+                        f"Closed position {position['ticket']} for {signal.symbol} at {close_result['close_price']}, "
+                        f"profit: {close_result['profit']}"
+                    )
+                    closed_count += 1
+
+            if closed_count > 0:
+                return True
+            else:
+                self.logger.warning(f"No matching positions were closed for {signal.symbol}")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Error executing close signal: {str(e)}")
+            return False
+
+    def _calculate_default_take_profit(self, entry_price, stop_loss, order_type):
+        """Calculate a default take profit price based on risk-to-reward ratio.
+
+        Args:
+            entry_price (float): Position entry price
+            stop_loss (float): Stop loss price
+            order_type (int): Order type (0=BUY, 1=SELL)
+
+        Returns:
+            float: Calculated take profit price
+        """
+        # Default risk-to-reward ratio of 1:1.5
+        risk_reward_ratio = 1.5
+
+        # Calculate risk (distance from entry to stop)
+        if order_type == 0:  # BUY
+            risk = entry_price - stop_loss
+            take_profit = entry_price + (risk * risk_reward_ratio)
+        else:  # SELL
+            risk = stop_loss - entry_price
+            take_profit = entry_price - (risk * risk_reward_ratio)
+
+        # Validate take profit (ensure it's reasonable)
+        if risk <= 0:
+            self.logger.warning(f"Invalid risk calculation: entry={entry_price}, stop={stop_loss}")
+            # Use a default 1% move if risk calculation failed
+            if order_type == 0:  # BUY
+                take_profit = entry_price * 1.01
+            else:  # SELL
+                take_profit = entry_price * 0.99
+
+        # Log the calculation
+        self.logger.debug(
+            f"Calculated default take profit for {order_type}: "
+            f"entry={entry_price}, stop={stop_loss}, take_profit={take_profit}"
+        )
+
+        return take_profit

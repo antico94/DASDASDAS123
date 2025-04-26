@@ -3,7 +3,7 @@ import os
 import time
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta
-from logging.logger import app_logger
+from custom_logging.logger import app_logger
 from config import Config
 
 

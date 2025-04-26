@@ -7,7 +7,7 @@ class BaseConfig:
     VERSION = "1.0.0"
 
     # MT5 settings
-    MT5_TERMINAL_PATH = ""  # Path to MT5 terminal executable
+    MT5_TERMINAL_PATH = "C:\Program Files\MetaTrader 5\\terminal64.exe"
     MT5_LOGIN = 145688
     MT5_PASSWORD = "X9vyB7%90i"
     MT5_SERVER = "FusionMarkets-Demo"

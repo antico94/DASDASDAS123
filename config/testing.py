@@ -9,4 +9,4 @@ class TestingConfig(BaseConfig):
     LOG_LEVEL = "DEBUG"
 
     # Use an in-memory or test database
-    DB_NAME = "XAUUSDTradingBot_Test"
+    DB_NAME = "TestDB"

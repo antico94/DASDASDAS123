@@ -2,7 +2,7 @@
 from abc import ABC, abstractmethod
 import pandas as pd
 from datetime import datetime
-from logging.logger import app_logger
+from custom_logging.logger import app_logger
 from data.models import StrategySignal
 from mt5_connector.data_fetcher import MT5DataFetcher
 
@@ -92,6 +92,7 @@ class BaseStrategy(ABC):
             self.logger.error(f"Error generating signals for {self.name}: {str(e)}")
             return []
 
+    # strategies/base_strategy.py - create_signal method
     def create_signal(self, signal_type, price, strength=0.5, metadata=None):
         """Create a strategy signal.
 

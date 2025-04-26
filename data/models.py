@@ -27,6 +27,7 @@ class OHLCData(Base):
         return f"<OHLCData(symbol='{self.symbol}', timeframe='{self.timeframe}', timestamp='{self.timestamp}')>"
 
 
+
 class StrategySignal(Base):
     """Model for strategy-generated trading signals."""
 
