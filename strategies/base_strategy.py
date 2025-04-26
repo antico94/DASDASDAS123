@@ -92,7 +92,6 @@ class BaseStrategy(ABC):
             self.logger.error(f"Error generating signals for {self.name}: {str(e)}")
             return []
 
-    # strategies/base_strategy.py - create_signal method
     def create_signal(self, signal_type, price, strength=0.5, metadata=None):
         """Create a strategy signal.
 
@@ -126,7 +125,7 @@ class BaseStrategy(ABC):
             signal_type=signal_type,
             price=price,
             strength=strength,
-            metadata=json.dumps(metadata or {})
+            signal_metadata=json.dumps(metadata or {})  # Updated field name
         )
 
         return signal

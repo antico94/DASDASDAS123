@@ -27,7 +27,6 @@ class OHLCData(Base):
         return f"<OHLCData(symbol='{self.symbol}', timeframe='{self.timeframe}', timestamp='{self.timestamp}')>"
 
 
-
 class StrategySignal(Base):
     """Model for strategy-generated trading signals."""
 
@@ -41,7 +40,7 @@ class StrategySignal(Base):
     signal_type = Column(String(20), nullable=False)  # 'BUY', 'SELL', 'CLOSE', etc.
     price = Column(Float, nullable=False)
     strength = Column(Float)  # Signal strength/confidence (0-1)
-    metadata = Column(String(1000))  # JSON string with additional signal data
+    signal_metadata = Column(String(1000))  # JSON string with additional signal data (renamed from 'metadata')
     is_executed = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 

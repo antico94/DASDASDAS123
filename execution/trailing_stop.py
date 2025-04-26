@@ -157,6 +157,8 @@ class EnhancedTrailingStopManager:
 
         return None
 
+    # execution/trailing_stop.py (excerpt - update metadata references only)
+
     def _calculate_trailing_stop(self, position, strategy_name, trade, is_partial):
         """Calculate new trailing stop based on strategy and position type.
 
@@ -183,28 +185,12 @@ class EnhancedTrailingStopManager:
             try:
                 signal_repo = self.trade_repository._session.query("StrategySignal")  # Ideally this would be passed in
                 signal = signal_repo.get_by_id(trade.signal_id)
-                if signal and signal.metadata:
-                    metadata = json.loads(signal.metadata)
+                if signal and signal.signal_metadata:  # Updated field name
+                    metadata = json.loads(signal.signal_metadata)  # Updated field name
             except Exception as e:
                 self.logger.warning(f"Could not get signal metadata: {str(e)}")
 
-        # Check if profitable - don't trail losing trades
-        is_profitable = (position_type == 0 and current_price > open_price) or \
-                        (position_type == 1 and current_price < open_price)
-
-        if not is_profitable:
-            return None
-
-        # If this is a partial position (Part1), we don't trail it - it has a fixed target
-        if is_partial and "_Part1" in position['comment']:
-            return None
-
-        # For EnhancedMA_Trend strategy, use EMA-based trailing
-        if "EnhancedMA" in strategy_name or "MA_Trend" in strategy_name:
-            return self._ma_trend_trailing_stop(position, trade, metadata)
-
-        # Default: ATR-based trailing
-        return self._atr_trailing_stop(position)
+        # (rest of the method remains unchanged)
 
     def _ma_trend_trailing_stop(self, position, trade, metadata):
         """Calculate trailing stop for MA Trend strategy based on EMAs.

@@ -64,6 +64,8 @@ class EnhancedOrderManager:
         return processed_count
 
     # execution/order_manager.py - _execute_signal method
+    # execution/enhanced_order_manager.py (excerpt - update metadata references only)
+
     def _execute_signal(self, signal):
         """Execute a trading signal with enhanced trade management.
 
@@ -76,8 +78,8 @@ class EnhancedOrderManager:
         self.logger.info(f"Executing signal {signal.id}: {signal.signal_type} for {signal.symbol}")
 
         try:
-            # Parse metadata
-            metadata = json.loads(signal.metadata or "{}")
+            # Parse metadata - updated field name
+            metadata = json.loads(signal.signal_metadata or "{}")
 
             if signal.signal_type in ["BUY", "SELL"]:
                 # Entry signal
