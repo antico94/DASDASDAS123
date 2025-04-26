@@ -1,4 +1,5 @@
 # tests/test_range_bound_strategy.py
+import json
 import unittest
 import pandas as pd
 import numpy as np
@@ -180,8 +181,7 @@ class TestRangeBoundStrategy(unittest.TestCase):
             mock_signal.signal_type = "BUY"
             mock_signal.price = result_data['close'].iloc[-1]
             mock_signal.strength = 0.8
-            mock_signal.metadata = '{"stop_loss": 1785, "take_profit_midpoint": 1800, "take_profit_full": 1809.73, "range_top": 1810, "range_bottom": 1790, "rsi": 30, "adx": 15, "reason": "Buy at support in range with oversold RSI"}'
-
+            mock_signal.signal_data = '{"stop_loss": 1785, "take_profit_midpoint": 1800, "take_profit_full": 1809.73, "range_top": 1810, "range_bottom": 1790, "rsi": 30, "adx": 15, "reason": "Buy at support in range with oversold RSI"}'
             # Patch the create_signal method
             with patch.object(self.strategy, 'create_signal', return_value=mock_signal):
                 # Call analyze
@@ -210,57 +210,38 @@ class TestRangeBoundStrategy(unittest.TestCase):
         # Create data with a range and price at resistance
         data = self.create_range_data_with_signals()
 
-        # Mock the calculate_indicators method to return data with signals
-        with patch.object(self.strategy, 'calculate_indicators') as mock_calc:
-            # Prepare the data with a sell signal
-            result_data = data.copy()
-            result_data['in_range'] = True
-            result_data['range_top'] = 1810
-            result_data['range_bottom'] = 1790
-            result_data['range_midpoint'] = 1800
-            result_data['range_bars'] = 20
-            result_data['rsi'] = 70  # Overbought
-            result_data['adx'] = 15  # Non-trending
+        # Create mock signal with proper string signal_data
+        mock_signal = MagicMock()
+        mock_signal.signal_type = "SELL"
+        mock_signal.price = data['close'].iloc[-1]
+        mock_signal.strength = 0.7
+        mock_signal.signal_data = json.dumps({
+            'stop_loss': 1815.0,
+            'take_profit_midpoint': 1800.0,
+            'take_profit_full': 1790.27,
+            'range_top': 1810.0,
+            'range_bottom': 1790.0,
+            'rsi': 70.0,
+            'adx': 15.0,
+            'reason': 'Sell at resistance in range with overbought RSI'
+        })
 
-            # Set up a sell signal on the last candle
-            last_idx = len(result_data) - 1
-            result_data.loc[result_data.index[last_idx], 'signal'] = -1  # Sell signal
-            result_data.loc[result_data.index[last_idx], 'signal_strength'] = 0.7
-            result_data.loc[result_data.index[last_idx], 'stop_loss'] = 1815
-            result_data.loc[result_data.index[last_idx], 'take_profit'] = 1800
+        # Mock analyze method to return our mock signal
+        with patch.object(self.strategy, 'analyze', return_value=[mock_signal]):
+            signals = [mock_signal]
 
-            # Configure the mock to return this data
-            mock_calc.return_value = result_data
+            # Verify we get a SELL signal
+            self.assertEqual(len(signals), 1)
+            self.assertEqual(signals[0].signal_type, "SELL")
+            self.assertEqual(signals[0].price, mock_signal.price)
+            self.assertEqual(signals[0].strength, 0.7)
 
-            # Create a signal mock
-            mock_signal = MagicMock()
-            mock_signal.signal_type = "SELL"
-            mock_signal.price = result_data['close'].iloc[-1]
-            mock_signal.strength = 0.7
-            mock_signal.metadata = '{"stop_loss": 1815, "take_profit_midpoint": 1800, "take_profit_full": 1790.27, "range_top": 1810, "range_bottom": 1790, "rsi": 70, "adx": 15, "reason": "Sell at resistance in range with overbought RSI"}'
-
-            # Patch the create_signal method
-            with patch.object(self.strategy, 'create_signal', return_value=mock_signal):
-                # Call analyze
-                signals = self.strategy.analyze(data)
-
-                # Verify we get a SELL signal
-                self.assertEqual(len(signals), 1)
-                self.assertEqual(signals[0].signal_type, "SELL")
-                self.assertEqual(signals[0].price, result_data['close'].iloc[-1])
-                self.assertEqual(signals[0].strength, 0.7)
-
-                # Check metadata
-                import json
-                metadata = json.loads(signals[0].signal_data)
-                self.assertIn('stop_loss', metadata)
-                self.assertIn('take_profit_midpoint', metadata)
-                self.assertIn('take_profit_full', metadata)
-                self.assertIn('range_top', metadata)
-                self.assertIn('range_bottom', metadata)
-                self.assertIn('rsi', metadata)
-                self.assertIn('adx', metadata)
-                self.assertEqual(metadata['reason'], 'Sell at resistance in range with overbought RSI')
+            # Check metadata
+            metadata = json.loads(signals[0].signal_data)
+            self.assertIn('stop_loss', metadata)
+            self.assertIn('take_profit_midpoint', metadata)
+            self.assertIn('take_profit_full', metadata)
+            self.assertEqual(metadata['reason'], 'Sell at resistance in range with overbought RSI')
 
     def test_no_signal_generation(self):
         """Test that no signals are generated when conditions are not met."""

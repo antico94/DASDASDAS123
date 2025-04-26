@@ -90,7 +90,7 @@ class TestEnhancedMovingAverageStrategy(unittest.TestCase):
             'volume': np.random.normal(1000, 100, 100)
         }, index=dates)
 
-        # Set up a bullish crossover
+        # Calculate indicators to get the base data structure
         data = self.strategy.calculate_indicators(data)
 
         # Manually set up a bullish crossover on the last candle
@@ -104,20 +104,28 @@ class TestEnhancedMovingAverageStrategy(unittest.TestCase):
         data.loc[data.index[-1], 'crossover'] = int(1)  # Bullish crossover
         data.loc[data.index[-1], 'trend_bias'] = int(1)  # Bullish trend
         data.loc[data.index[-1], 'atr'] = float(10)  # Set ATR for stop calculation
-        data.loc[data.index[-5:-1], 'swing_low'] = float(1785)  # Set recent swing lows for stop placement
 
-        # Use mock to bypass the direct call to the database
-        with patch.object(self.strategy, 'create_signal') as mock_create_signal:
-            mock_create_signal.return_value = MagicMock()  # Return a mock instead of actual StrategySignal
+        # Set swing lows for all required indices to avoid NaN issues
+        for i in range(-6, 0):
+            data.loc[data.index[i], 'swing_low'] = float(1785)
 
-            # Call analyze
-            signals = self.strategy.analyze(data)
+        # Create a signal mock
+        mock_signal = MagicMock()
+        mock_signal.signal_type = "BUY"
+        mock_signal.price = data['close'].iloc[-1]
+        mock_signal.strength = 0.8
 
-            # Verify create_signal was called with expected parameters
-            self.assertTrue(mock_create_signal.called)
-            args, kwargs = mock_create_signal.call_args
-            self.assertEqual(kwargs['signal_type'], 'BUY')
-            self.assertGreater(kwargs['price'], 0)
+        # Use mocks with proper patches
+        with patch.object(self.strategy, 'calculate_indicators', return_value=data):
+            with patch.object(self.strategy, 'create_signal', return_value=mock_signal) as mock_create_signal:
+                # Call analyze
+                signals = self.strategy.analyze(data)
+
+                # Verify create_signal was called with expected parameters
+                self.assertTrue(mock_create_signal.called)
+                args, kwargs = mock_create_signal.call_args
+                self.assertEqual(kwargs['signal_type'], 'BUY')
+                self.assertGreater(kwargs['price'], 0)
 
     def test_bearish_crossover_signal(self):
         """Test generation of bearish crossover signal."""
