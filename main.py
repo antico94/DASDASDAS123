@@ -131,13 +131,55 @@ def run_strategies():
                 signal_repo.add(signal)
                 generated_signals.append(signal)
 
-        # TODO: Add other strategies here
+        # Run Breakout strategy if enabled
+        if "breakout" in enabled_strategies:
+            breakout_strategy = container.breakout_strategy()
+            signals = breakout_strategy.generate_signals()
+
+            # Save signals to database
+            for signal in signals:
+                signal_repo.add(signal)
+                generated_signals.append(signal)
+
+        # Run Range-Bound strategy if enabled
+        if "range_bound" in enabled_strategies:
+            range_bound_strategy = container.range_bound_strategy()
+            signals = range_bound_strategy.generate_signals()
+
+            # Save signals to database
+            for signal in signals:
+                signal_repo.add(signal)
+                generated_signals.append(signal)
+
+        # Run Momentum Scalping strategy if enabled
+        if "momentum_scalping" in enabled_strategies:
+            momentum_strategy = container.momentum_scalping_strategy()
+            signals = momentum_strategy.generate_signals()
+
+            # Save signals to database
+            for signal in signals:
+                signal_repo.add(signal)
+                generated_signals.append(signal)
+
+        # Run Ichimoku strategy if enabled
+        if "ichimoku" in enabled_strategies:
+            ichimoku_strategy = container.ichimoku_strategy()
+            signals = ichimoku_strategy.generate_signals()
+
+            # Save signals to database
+            for signal in signals:
+                signal_repo.add(signal)
+                generated_signals.append(signal)
 
         if generated_signals:
             app_logger.info(f"Generated {len(generated_signals)} total signals")
 
     except Exception as e:
         app_logger.error(f"Error running strategies: {str(e)}")
+        return 0
+
+    return len(generated_signals)
+
 
 
 def process_trades():
@@ -234,6 +276,8 @@ def main():
         app_logger.info(f"{Config.APP_NAME} shutdown complete")
 
     return 0
+
+
 
 
 if __name__ == "__main__":

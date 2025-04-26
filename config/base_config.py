@@ -8,9 +8,9 @@ class BaseConfig:
 
     # MT5 settings
     MT5_TERMINAL_PATH = ""  # Path to MT5 terminal executable
-    MT5_LOGIN = None
-    MT5_PASSWORD = None
-    MT5_SERVER = None
+    MT5_LOGIN = 145688
+    MT5_PASSWORD = "X9vyB7%90i"
+    MT5_SERVER = "FusionMarkets-Demo"
 
     # Trading settings
     SYMBOL = "XAUUSD"
@@ -25,12 +25,12 @@ class BaseConfig:
     # Database settings
     DB_DRIVER = "ODBC Driver 17 for SQL Server"
     DB_SERVER = "localhost"
-    DB_NAME = "XAUUSDTradingBot"
-    DB_USERNAME = ""
-    DB_PASSWORD = ""
+    DB_NAME = "TestDB"
+    DB_USERNAME = "app_user"
+    DB_PASSWORD = "password01!"
 
     # Strategy settings
-    STRATEGIES_ENABLED = ["moving_average"]  # List of enabled strategies
+    STRATEGIES_ENABLED = ["moving_average", "breakout", "range_bound", "momentum_scalping", "ichimoku"]  # List of enabled strategies
 
     # Strategy specific settings
     # Moving Average Trend Strategy
@@ -40,13 +40,20 @@ class BaseConfig:
 
     # Breakout Strategy
     BO_TIMEFRAME = "M15"
+    BO_LOOKBACK_PERIODS = 48
+    BO_MIN_RANGE_BARS = 10
+    BO_VOLUME_THRESHOLD = 1.5
     BO_ATR_PERIOD = 14
 
     # Range-Bound Strategy
     RB_TIMEFRAME = "M15"
+    RB_LOOKBACK_PERIODS = 48
+    RB_MIN_RANGE_BARS = 10
     RB_RSI_PERIOD = 14
     RB_RSI_OVERBOUGHT = 70
     RB_RSI_OVERSOLD = 30
+    RB_ADX_PERIOD = 14
+    RB_ADX_THRESHOLD = 20
 
     # Momentum Scalping Strategy
     MS_TIMEFRAME = "M5"
