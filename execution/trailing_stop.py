@@ -185,12 +185,59 @@ class EnhancedTrailingStopManager:
             try:
                 signal_repo = self.trade_repository._session.query("StrategySignal")  # Ideally this would be passed in
                 signal = signal_repo.get_by_id(trade.signal_id)
-                if signal and signal.signal_metadata:  # Updated field name
-                    metadata = json.loads(signal.signal_metadata)  # Updated field name
+                if signal and signal.metadata:  # Use 'metadata' instead of 'signal_metadata'
+                    metadata = json.loads(signal.metadata)
             except Exception as e:
                 self.logger.warning(f"Could not get signal metadata: {str(e)}")
 
-        # (rest of the method remains unchanged)
+        # Apply different trailing stop logic based on strategy
+        if strategy_name == "EnhancedMA_Trend":
+            return self._ma_trend_trailing_stop(position, trade, metadata)
+        elif strategy_name == "Breakout":
+            # For breakout strategy, trail behind the breakout level
+            if position_type == 0:  # BUY
+                breakout_level = metadata.get('range_top', 0)
+                if breakout_level > 0 and current_price > breakout_level * 1.005:
+                    return max(breakout_level, current_sl)
+            else:  # SELL
+                breakout_level = metadata.get('range_bottom', 0)
+                if breakout_level > 0 and current_price < breakout_level * 0.995:
+                    return min(breakout_level, current_sl)
+        elif strategy_name == "Range_Mean_Reversion":
+            # For range-bound strategy, move to breakeven once at midpoint
+            midpoint = metadata.get('range_midpoint', 0)
+            if midpoint > 0:
+                if position_type == 0 and current_price > midpoint:  # BUY crossed midpoint
+                    return max(open_price, current_sl)
+                elif position_type == 1 and current_price < midpoint:  # SELL crossed midpoint
+                    return min(open_price, current_sl)
+        elif strategy_name == "Momentum_Scalping":
+            # For momentum scalping, use tight trailing once in profit
+            risk = abs(open_price - current_sl) if current_sl > 0 else 0
+            if risk > 0:
+                if position_type == 0 and current_price > open_price + risk:  # BUY and in 1R profit
+                    # Trail 50% of ATR behind price
+                    atr = metadata.get('atr', 0)
+                    if atr > 0:
+                        return max(current_price - (atr * 0.5), current_sl)
+                elif position_type == 1 and current_price < open_price - risk:  # SELL and in 1R profit
+                    # Trail 50% of ATR behind price
+                    atr = metadata.get('atr', 0)
+                    if atr > 0:
+                        return min(current_price + (atr * 0.5), current_sl)
+        elif strategy_name == "Ichimoku_Cloud":
+            # For Ichimoku, trail behind the Kijun-sen
+            kijun = metadata.get('kijun_sen', 0)
+            if kijun > 0:
+                if position_type == 0 and current_price > kijun:  # BUY
+                    return max(kijun * 0.998, current_sl)  # Trail slightly below Kijun
+                elif position_type == 1 and current_price < kijun:  # SELL
+                    return min(kijun * 1.002, current_sl)  # Trail slightly above Kijun
+        else:
+            # Default trailing stop using ATR
+            return self._atr_trailing_stop(position)
+
+        return None  # No update needed
 
     def _ma_trend_trailing_stop(self, position, trade, metadata):
         """Calculate trailing stop for MA Trend strategy based on EMAs.

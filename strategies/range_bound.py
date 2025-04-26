@@ -81,9 +81,14 @@ class RangeBoundStrategy(BaseStrategy):
         # Calculate indicators
         data = self.calculate_indicators(data)
 
-        # Check if we have sufficient data after calculations
-        if data.empty or 'signal' not in data.columns:
+        # Check if data is None or empty
+        if data is None or (hasattr(data, 'empty') and data.empty):
             self.logger.warning("Insufficient data for range-bound analysis after calculations")
+            return []
+
+        # Check if required columns exist
+        if 'signal' not in data.columns:
+            self.logger.warning("Required column 'signal' not found in processed data")
             return []
 
         signals = []
@@ -171,35 +176,6 @@ class RangeBoundStrategy(BaseStrategy):
             )
 
         return signals
-
-        # Calculate RSI
-        delta = data['close'].diff()
-        gain = delta.where(delta > 0, 0)
-        loss = -delta.where(delta < 0, 0)
-
-        avg_gain = gain.rolling(window=self.rsi_period).mean()
-        avg_loss = loss.rolling(window=self.rsi_period).mean()
-
-        rs = avg_gain / avg_loss
-        data['rsi'] = 100 - (100 / (1 + rs))
-
-        # Calculate ADX
-        data = self._calculate_adx(data)
-
-        # Calculate Bollinger Bands for range identification
-        data['sma20'] = data['close'].rolling(window=20).mean()
-        std_dev = data['close'].rolling(window=20).std()
-        data['upper_band'] = data['sma20'] + (std_dev * 2)
-        data['lower_band'] = data['sma20'] - (std_dev * 2)
-        data['bb_width'] = (data['upper_band'] - data['lower_band']) / data['sma20']
-
-        # Identify potential ranges
-        data = self._identify_ranges(data)
-
-        # Generate trading signals
-        data = self._identify_entry_signals(data)
-
-        return data
 
     def _calculate_adx(self, data):
         """Calculate Average Directional Index (ADX).

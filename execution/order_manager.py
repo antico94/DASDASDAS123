@@ -78,8 +78,8 @@ class EnhancedOrderManager:
         self.logger.info(f"Executing signal {signal.id}: {signal.signal_type} for {signal.symbol}")
 
         try:
-            # Parse metadata - updated field name
-            metadata = json.loads(signal.signal_metadata or "{}")
+            # Parse metadata - use 'metadata' instead of 'signal_metadata'
+            metadata = json.loads(signal.metadata or "{}")
 
             if signal.signal_type in ["BUY", "SELL"]:
                 # Entry signal
