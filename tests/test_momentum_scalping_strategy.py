@@ -282,6 +282,49 @@ class TestMomentumScalpingStrategy(unittest.TestCase):
             # Verify we get no trading signals
             self.assertEqual(len(signals), 0)
 
+    def create_bearish_momentum_data(self):
+        """Create simulated data with a bearish momentum setup."""
+        # Create 100 candles
+        dates = [datetime.now() - timedelta(minutes=5 * i) for i in range(100, 0, -1)]
+
+        # Initialize with random prices
+        data = pd.DataFrame({
+            'open': np.random.normal(1800, 10, 100),
+            'high': np.random.normal(1810, 10, 100),
+            'low': np.random.normal(1790, 10, 100),
+            'close': np.random.normal(1800, 10, 100),
+            'volume': np.random.normal(1000, 100, 100)
+        }, index=dates)
+
+        # Create an uptrend for candles 50-80
+        ema_value = 1780
+        for i in range(50, 80):
+            # Price above EMA in an uptrend
+            data.loc[data.index[i], 'open'] = ema_value + np.random.uniform(5, 10)
+            data.loc[data.index[i], 'close'] = ema_value + np.random.uniform(5, 10)
+            data.loc[data.index[i], 'high'] = data.loc[data.index[i], 'close'] + np.random.uniform(0, 3)
+            data.loc[data.index[i], 'low'] = data.loc[data.index[i], 'close'] - np.random.uniform(0, 3)
+
+            # EMA sloping up
+            ema_value += 0.5
+
+        # Create a bearish momentum shift on candles 81-85
+        for i in range(80, 85):
+            # Falling prices crossing below EMA
+            cross_progress = (i - 80) / 4  # 0 to 1 as we progress through bars
+
+            # Candle 80: still above, 81: crosses, 82-84: below
+            if i == 80:
+                data.loc[data.index[i], 'close'] = ema_value + 1  # Still above
+            else:
+                data.loc[data.index[i], 'close'] = ema_value - (cross_progress * 8)  # Crosses and continues below
+
+            data.loc[data.index[i], 'open'] = data.loc[data.index[i], 'close'] + np.random.uniform(1, 4)
+            data.loc[data.index[i], 'high'] = data.loc[data.index[i], 'open'] + np.random.uniform(0, 2)
+            data.loc[data.index[i], 'low'] = data.loc[data.index[i], 'close'] - np.random.uniform(0, 2)
+
+        return data
+
     def test_insufficient_data(self):
         """Test handling of insufficient data."""
         # Create small dataset with too few candles

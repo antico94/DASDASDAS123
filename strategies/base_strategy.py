@@ -116,6 +116,17 @@ class BaseStrategy(ABC):
         if not (0 <= strength <= 1):
             raise ValueError(f"Invalid strength: {strength}. Must be between 0 and 1.")
 
+        # Convert NumPy values to native Python types for JSON serialization
+        processed_metadata = {}
+        if metadata:
+            for key, value in metadata.items():
+                if hasattr(value, 'item'):  # For NumPy scalars
+                    processed_metadata[key] = value.item()
+                elif isinstance(value, bool):  # Handle boolean values
+                    processed_metadata[key] = bool(value)
+                else:
+                    processed_metadata[key] = value
+
         # Create signal
         signal = StrategySignal(
             strategy_name=self.name,
@@ -123,9 +134,9 @@ class BaseStrategy(ABC):
             timeframe=self.timeframe,
             timestamp=datetime.utcnow(),
             signal_type=signal_type,
-            price=price,
-            strength=strength,
-            signal_metadata=json.dumps(metadata or {})  # Updated field name
+            price=float(price) if hasattr(price, 'item') else price,
+            strength=float(strength) if hasattr(strength, 'item') else strength,
+            signal_data=json.dumps(processed_metadata or {})  # Use signal_data to match model field
         )
 
         return signal

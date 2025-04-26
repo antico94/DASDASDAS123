@@ -316,6 +316,10 @@ class TestIchimokuStrategy(unittest.TestCase):
         signals = self.strategy.analyze(data)
         self.assertEqual(len(signals), 0)
 
+    def _identify_signals(self, data):
+        """Call the strategy's _identify_signals method on the data."""
+        return self.strategy._identify_signals(data)
+
 
 if __name__ == '__main__':
     unittest.main()
