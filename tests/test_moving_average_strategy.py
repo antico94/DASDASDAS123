@@ -158,7 +158,7 @@ class TestEnhancedMovingAverageStrategy(unittest.TestCase):
 
         # Check metadata
         import json
-        metadata = json.loads(signals[0].metadata)
+        metadata = json.loads(signals[0].signal_data)
         self.assertIn('fast_ema', metadata)
         self.assertIn('slow_ema', metadata)
         self.assertIn('stop_loss', metadata)
@@ -207,7 +207,7 @@ class TestEnhancedMovingAverageStrategy(unittest.TestCase):
 
         # Check metadata
         import json
-        metadata = json.loads(signals[0].metadata)
+        metadata = json.loads(signals[0].signal_data)
         self.assertIn('signal_type', metadata)
         self.assertEqual(metadata['signal_type'], 'pullback')
         self.assertEqual(metadata['reason'], 'Pullback to fast EMA in uptrend')
@@ -251,7 +251,7 @@ class TestEnhancedMovingAverageStrategy(unittest.TestCase):
 
         # Check metadata
         import json
-        metadata = json.loads(signals[0].metadata)
+        metadata = json.loads(signals[0].signal_data)
         self.assertIn('signal_type', metadata)
         self.assertEqual(metadata['signal_type'], 'pullback')
         self.assertEqual(metadata['reason'], 'Pullback to fast EMA in downtrend')

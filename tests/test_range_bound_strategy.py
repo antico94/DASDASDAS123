@@ -195,7 +195,7 @@ class TestRangeBoundStrategy(unittest.TestCase):
 
                 # Check metadata
                 import json
-                metadata = json.loads(signals[0].metadata)
+                metadata = json.loads(signals[0].signal_data)
                 self.assertIn('stop_loss', metadata)
                 self.assertIn('take_profit_midpoint', metadata)
                 self.assertIn('take_profit_full', metadata)
@@ -252,7 +252,7 @@ class TestRangeBoundStrategy(unittest.TestCase):
 
                 # Check metadata
                 import json
-                metadata = json.loads(signals[0].metadata)
+                metadata = json.loads(signals[0].signal_data)
                 self.assertIn('stop_loss', metadata)
                 self.assertIn('take_profit_midpoint', metadata)
                 self.assertIn('take_profit_full', metadata)
