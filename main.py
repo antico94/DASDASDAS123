@@ -97,17 +97,15 @@ def sync_historical_data():
     for timeframe in timeframes:
         app_logger.info(f"Syncing {Config.SYMBOL} {timeframe} data...")
         try:
+            # Increase days_back from 30 to 60 or more for Ichimoku
             synced_count = data_fetcher.sync_missing_data(
                 symbol=Config.SYMBOL,
                 timeframe=timeframe,
-                days_back=30  # Sync last 30 days
+                days_back=60  # Changed from 30 to 60
             )
             app_logger.info(f"Synced {synced_count} candles for {Config.SYMBOL} {timeframe}")
         except Exception as e:
             app_logger.error(f"Error syncing {Config.SYMBOL} {timeframe} data: {str(e)}")
-
-    connector.disconnect()
-    app_logger.info("Historical data sync completed")
 
 
 def take_account_snapshot():
