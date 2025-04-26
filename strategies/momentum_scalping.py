@@ -1,11 +1,6 @@
-# strategies/momentum_scalping.py
 import numpy as np
 import pandas as pd
-import json
-from datetime import datetime, timedelta
-from logging.logger import app_logger
 from strategies.base_strategy import BaseStrategy
-from data.models import StrategySignal
 
 
 class MomentumScalpingStrategy(BaseStrategy):

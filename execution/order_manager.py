@@ -1,4 +1,4 @@
-# execution/order_manager.py
+# execution/enhanced_order_manager.py
 import json
 import time
 from datetime import datetime
@@ -10,12 +10,12 @@ from risk_management.position_sizing import PositionSizer
 from risk_management.risk_validator import RiskValidator
 
 
-class OrderManager:
-    """Class to manage order execution and trade lifecycle."""
+class EnhancedOrderManager:
+    """Enhanced class to manage order execution with partial profit-taking and trailing stops."""
 
     def __init__(self, connector=None, trade_repository=None,
                  signal_repository=None, position_sizer=None, risk_validator=None):
-        """Initialize the order manager.
+        """Initialize the enhanced order manager.
 
         Args:
             connector (MT5Connector, optional): MT5 connector. Defaults to None.
@@ -33,7 +33,7 @@ class OrderManager:
         self.logger = app_logger
 
     def process_pending_signals(self):
-        """Process all pending trade signals.
+        """Process all pending trade signals with enhanced trade management.
 
         Returns:
             int: Number of signals processed
@@ -64,7 +64,7 @@ class OrderManager:
         return processed_count
 
     def _execute_signal(self, signal):
-        """Execute a trading signal.
+        """Execute a trading signal with enhanced trade management.
 
         Args:
             signal (StrategySignal): The signal to execute
@@ -93,7 +93,7 @@ class OrderManager:
             return False
 
     def _execute_entry_signal(self, signal, metadata):
-        """Execute an entry (BUY/SELL) signal.
+        """Execute an entry (BUY/SELL) signal with enhanced position management.
 
         Args:
             signal (StrategySignal): The entry signal
@@ -124,35 +124,166 @@ class OrderManager:
             self.logger.warning(f"Risk validation failed: {reason}")
             return False
 
-        # Calculate position size
+        # Check if the signal suggests partial profit-taking
+        take_profit_1 = metadata.get('take_profit_1r', 0.0)
+        take_profit_2 = metadata.get('take_profit_2r', 0.0)
+
+        if take_profit_1 > 0 and take_profit_2 > 0:
+            # Use multi-position profit-taking strategy
+            return self._execute_with_partial_profit(signal, metadata, order_type, stop_loss,
+                                                     take_profit_1, take_profit_2)
+        else:
+            # Use standard single position strategy
+            return self._execute_standard_entry(signal, metadata, order_type, stop_loss)
+
+    def _execute_with_partial_profit(self, signal, metadata, order_type, stop_loss,
+                                     take_profit_1, take_profit_2):
+        """Execute an entry with partial profit-taking plan by opening two separate positions.
+
+        Args:
+            signal (StrategySignal): The entry signal
+            metadata (dict): Signal metadata
+            order_type (int): Order type (0=BUY, 1=SELL)
+            stop_loss (float): Initial stop loss price
+            take_profit_1 (float): First target for partial profit-taking
+            take_profit_2 (float): Second target for the remainder
+
+        Returns:
+            bool: True if executed successfully, False otherwise
+        """
+        self.logger.info(f"Executing with partial profit strategy for signal {signal.id}")
+
         try:
+            # Calculate total position size
+            total_position_size = self.position_sizer.calculate_position_size(
+                symbol=signal.symbol,
+                entry_price=signal.price,
+                stop_loss_price=stop_loss
+            )
+
+            # Validate position size
+            if not self.position_sizer.validate_position_size(signal.symbol, total_position_size):
+                self.logger.warning(f"Invalid position size calculated: {total_position_size}")
+                return False
+
+            # Split into two equal parts
+            position_size_1 = total_position_size * 0.5
+            position_size_2 = total_position_size * 0.5
+
+            # Round to allowed lot sizes if needed
+            symbol_info = self.connector.get_symbol_info(signal.symbol)
+            lot_step = symbol_info['lot_step']
+
+            position_size_1 = round(position_size_1 / lot_step) * lot_step
+            position_size_2 = total_position_size - position_size_1
+
+            # Ensure minimum lot sizes
+            min_lot = symbol_info['min_lot']
+            if position_size_1 < min_lot or position_size_2 < min_lot:
+                # Can't split, use single position approach
+                self.logger.warning(f"Position size too small to split: {total_position_size}. Using single position.")
+                return self._execute_standard_entry(signal, metadata, order_type, stop_loss)
+
+            # Create comments for the two positions
+            comment_1 = f"Signal_{signal.id}_{signal.strategy_name}_Part1"
+            comment_2 = f"Signal_{signal.id}_{signal.strategy_name}_Part2"
+
+            # Place first position with the first target
+            order_result_1 = self.connector.place_order(
+                order_type=order_type,
+                symbol=signal.symbol,
+                volume=position_size_1,
+                price=0.0,  # Market price
+                stop_loss=stop_loss,
+                take_profit=take_profit_1,
+                comment=comment_1
+            )
+
+            # Record the first trade
+            trade_1 = Trade(
+                strategy_name=signal.strategy_name,
+                signal_id=signal.id,
+                symbol=signal.symbol,
+                order_type=signal.signal_type,
+                volume=position_size_1,
+                open_price=order_result_1['price'],
+                open_time=datetime.utcnow(),
+                stop_loss=stop_loss,
+                take_profit=take_profit_1,
+                comment=comment_1
+            )
+            self.trade_repository.add(trade_1)
+
+            # Place second position with further target
+            order_result_2 = self.connector.place_order(
+                order_type=order_type,
+                symbol=signal.symbol,
+                volume=position_size_2,
+                price=0.0,  # Market price
+                stop_loss=stop_loss,
+                take_profit=take_profit_2,
+                comment=comment_2
+            )
+
+            # Record the second trade
+            trade_2 = Trade(
+                strategy_name=signal.strategy_name,
+                signal_id=signal.id,
+                symbol=signal.symbol,
+                order_type=signal.signal_type,
+                volume=position_size_2,
+                open_price=order_result_2['price'],
+                open_time=datetime.utcnow(),
+                stop_loss=stop_loss,
+                take_profit=take_profit_2,
+                comment=comment_2
+            )
+            self.trade_repository.add(trade_2)
+
+            self.logger.info(
+                f"Successfully executed {signal.signal_type} with partial profit strategy: "
+                f"position 1: price={order_result_1['price']}, volume={position_size_1}, "
+                f"SL={stop_loss}, TP1={take_profit_1}, "
+                f"position 2: price={order_result_2['price']}, volume={position_size_2}, "
+                f"SL={stop_loss}, TP2={take_profit_2}"
+            )
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Error executing partial profit strategy: {str(e)}")
+            return False
+
+    def _execute_standard_entry(self, signal, metadata, order_type, stop_loss):
+        """Execute a standard entry (single position).
+
+        Args:
+            signal (StrategySignal): The entry signal
+            metadata (dict): Signal metadata
+            order_type (int): Order type (0=BUY, 1=SELL)
+            stop_loss (float): Stop loss price
+
+        Returns:
+            bool: True if executed successfully, False otherwise
+        """
+        try:
+            # Calculate position size
             position_size = self.position_sizer.calculate_position_size(
                 symbol=signal.symbol,
                 entry_price=signal.price,
                 stop_loss_price=stop_loss
             )
-        except Exception as e:
-            self.logger.error(f"Error calculating position size: {str(e)}")
-            return False
 
-        # Validate position size
-        if not self.position_sizer.validate_position_size(signal.symbol, position_size):
-            self.logger.warning(f"Invalid position size calculated: {position_size}")
-            return False
+            # Validate position size
+            if not self.position_sizer.validate_position_size(signal.symbol, position_size):
+                self.logger.warning(f"Invalid position size calculated: {position_size}")
+                return False
 
-        # Calculate take profit (if applicable)
-        # Here we implement the 1:1 R:R for the first target
-        take_profit = 0.0
-        if stop_loss > 0:
-            if order_type == 0:  # BUY
-                risk_distance = signal.price - stop_loss
-                take_profit = signal.price + risk_distance  # 1:1 risk:reward
-            else:  # SELL
-                risk_distance = stop_loss - signal.price
-                take_profit = signal.price - risk_distance  # 1:1 risk:reward
+            # Calculate take profit if applicable
+            take_profit = metadata.get('take_profit_1r', 0.0)  # Use first target if available
+            if not take_profit:
+                take_profit = self._calculate_default_take_profit(signal.price, stop_loss, order_type)
 
-        # Place the order
-        try:
             # Add signal info to order comment
             comment = f"Signal_{signal.id}_{signal.strategy_name}"
 
@@ -194,84 +325,3 @@ class OrderManager:
         except Exception as e:
             self.logger.error(f"Error placing order: {str(e)}")
             return False
-
-    def _execute_close_signal(self, signal, metadata):
-        """Execute a close signal.
-
-        Args:
-            signal (StrategySignal): The close signal
-            metadata (dict): Signal metadata
-
-        Returns:
-            bool: True if executed successfully, False otherwise
-        """
-        # Get positions for the symbol
-        positions = self.connector.get_positions(signal.symbol)
-
-        if not positions:
-            self.logger.info(f"No open positions for {signal.symbol} to close")
-            return True  # No action needed, consider it "executed"
-
-        # Filter positions by strategy if strategy is specified in metadata
-        target_strategy = metadata.get('strategy_name')
-        if target_strategy:
-            positions = [p for p in positions if
-                         p['comment'].startswith(f"Signal_") and target_strategy in p['comment']]
-
-        # Get position side to close (if specified)
-        position_type = metadata.get('position_type')  # 'BUY' or 'SELL'
-        if position_type:
-            position_type_map = {'BUY': 0, 'SELL': 1}
-            position_type_value = position_type_map.get(position_type)
-            if position_type_value is not None:
-                positions = [p for p in positions if p['type'] == position_type_value]
-
-        # Check if we have positions to close
-        if not positions:
-            self.logger.info(
-                f"No matching positions found for {signal.symbol} "
-                f"(strategy: {target_strategy}, type: {position_type})"
-            )
-            return True  # No action needed, consider it "executed"
-
-        # Close all matching positions
-        success = True
-        for position in positions:
-            try:
-                # Get the trade from our database
-                trade_comment = position['comment']
-                trade = None
-                if trade_comment:
-                    # Extract signal ID from comment
-                    parts = trade_comment.split('_')
-                    if len(parts) >= 2 and parts[0] == "Signal":
-                        try:
-                            signal_id = int(parts[1])
-                            trades = self.trade_repository.get_all()
-                            for t in trades:
-                                if t.signal_id == signal_id and t.close_time is None:
-                                    trade = t
-                                    break
-                        except:
-                            pass
-
-                # Close the position
-                close_result = self.connector.close_position(position['ticket'])
-
-                # Update the trade in our database
-                if trade:
-                    trade.close_price = close_result['close_price']
-                    trade.close_time = datetime.utcnow()
-                    trade.profit = close_result['profit']
-                    self.trade_repository.update(trade)
-
-                self.logger.info(
-                    f"Closed position {position['ticket']} for {signal.symbol}: "
-                    f"price={close_result['close_price']}, profit={close_result['profit']}"
-                )
-
-            except Exception as e:
-                self.logger.error(f"Error closing position {position['ticket']}: {str(e)}")
-                success = False
-
-        return success
