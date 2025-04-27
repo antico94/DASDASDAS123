@@ -1,4 +1,4 @@
-# main.py (updated)
+# main.py (improved)
 import os
 import sys
 import time
@@ -9,50 +9,7 @@ from custom_logging.logger import app_logger
 from config import Config
 from container import Container
 from data.db_session import DatabaseSession
-from data.models import AccountSnapshot
-
-
-container = Container()
-container.config.from_dict({
-    # General settings
-    "app_name": Config.APP_NAME,
-    "version": Config.VERSION,
-    "symbol": Config.SYMBOL,
-
-    # Moving Average Strategy settings
-    "ma_timeframe": Config.MA_TIMEFRAME,
-    "ma_fast_period": Config.MA_FAST_PERIOD,
-    "ma_slow_period": Config.MA_SLOW_PERIOD,
-
-    # Breakout Strategy settings
-    "bo_timeframe": Config.BO_TIMEFRAME,
-    "bo_lookback_periods": Config.BO_LOOKBACK_PERIODS,
-    "bo_min_range_bars": Config.BO_MIN_RANGE_BARS,
-    "bo_volume_threshold": Config.BO_VOLUME_THRESHOLD,
-
-    # Range-Bound Strategy settings
-    "rb_timeframe": Config.RB_TIMEFRAME,
-    "rb_lookback_periods": Config.RB_LOOKBACK_PERIODS,
-    "rb_min_range_bars": Config.RB_MIN_RANGE_BARS,
-    "rb_rsi_period": Config.RB_RSI_PERIOD,
-    "rb_rsi_overbought": Config.RB_RSI_OVERBOUGHT,
-    "rb_rsi_oversold": Config.RB_RSI_OVERSOLD,
-    "rb_adx_period": Config.RB_ADX_PERIOD,
-    "rb_adx_threshold": Config.RB_ADX_THRESHOLD,
-
-    # Momentum Scalping Strategy settings
-    "ms_timeframe": Config.MS_TIMEFRAME,
-    "ms_ema_period": Config.MS_EMA_PERIOD,
-    "ms_macd_fast": Config.MS_MACD_FAST,
-    "ms_macd_slow": Config.MS_MACD_SLOW,
-    "ms_macd_signal": Config.MS_MACD_SIGNAL,
-
-    # Ichimoku Strategy settings
-    "ic_timeframe": Config.IC_TIMEFRAME,
-    "ic_tenkan_period": Config.IC_TENKAN_PERIOD,
-    "ic_kijun_period": Config.IC_KIJUN_PERIOD,
-    "ic_senkou_b_period": Config.IC_SENKOU_B_PERIOD
-})
+from data.models import AccountSnapshot, Base
 
 # Global flag for the main loop
 running = True
@@ -69,49 +26,132 @@ def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description=f"{Config.APP_NAME} v{Config.VERSION}")
     parser.add_argument('--env', default='development', help='Environment (development, production, testing)')
-    parser.add_argument('--init-db', action='store_true', help='Initialize database schema')
-    parser.add_argument('--sync-data', action='store_true', help='Sync historical data')
+    parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
+    parser.add_argument('--no-trade', action='store_true', help='Run in simulation mode without placing real trades')
     return parser.parse_args()
 
 
 def initialize_database():
-    """Initialize database schema."""
-    app_logger.info("Initializing database schema...")
+    """Initialize database schema if it doesn't exist yet."""
+    app_logger.info("Checking database...")
     DatabaseSession.initialize()
-    DatabaseSession.create_tables()
+
+    # Check if tables exist by trying to query one of our tables
+    session = DatabaseSession.get_session()
+    try:
+        # Try to get one record from the account_snapshots table
+        result = session.execute("SELECT 1 FROM account_snapshots LIMIT 1")
+        exists = result.fetchone() is not None
+        session.close()
+
+        if exists:
+            app_logger.info("Database already initialized")
+            return
+    except Exception:
+        # Table doesn't exist, we'll create all tables
+        pass
+    finally:
+        session.close()
+
+    app_logger.info("Initializing database schema...")
+    Base.metadata.create_all(DatabaseSession._engine)
     app_logger.info("Database schema initialized successfully")
 
 
-def sync_historical_data():
-    """Sync historical price data for configured symbol and timeframes."""
-    app_logger.info("Syncing historical data...")
+def sync_historical_data(data_fetcher, force=False):
+    """Sync historical price data for configured symbol and timeframes if needed.
 
-    # Initialize MT5 connector and data fetcher
-    connector = container.mt5_connector()
-    data_fetcher = container.data_fetcher()
-
+    Args:
+        data_fetcher: The data fetcher instance
+        force (bool): Force sync even if not needed
+    """
     # Define timeframes to sync
     timeframes = ['M5', 'M15', 'M30', 'H1', 'H4']
 
-    # Sync data for each timeframe
-    for timeframe in timeframes:
-        app_logger.info(f"Syncing {Config.SYMBOL} {timeframe} data...")
-        try:
-            # Increase days_back from 30 to 60 or more for Ichimoku
-            synced_count = data_fetcher.sync_missing_data(
-                symbol=Config.SYMBOL,
-                timeframe=timeframe,
-                days_back=60  # Changed from 30 to 60
-            )
-            app_logger.info(f"Synced {synced_count} candles for {Config.SYMBOL} {timeframe}")
-        except Exception as e:
-            app_logger.error(f"Error syncing {Config.SYMBOL} {timeframe} data: {str(e)}")
+    # Check if we need to sync
+    last_sync_time = get_last_sync_time()
+    now = datetime.utcnow()
+
+    # Sync if it's been more than 8 hours since last sync or if forced
+    if force or last_sync_time is None or (now - last_sync_time) > timedelta(hours=8):
+        app_logger.info(f"Syncing historical data for {Config.SYMBOL}...")
+
+        for timeframe in timeframes:
+            try:
+                app_logger.info(f"Syncing {timeframe} data...")
+                synced_count = data_fetcher.sync_missing_data(
+                    symbol=Config.SYMBOL,
+                    timeframe=timeframe,
+                    days_back=60  # For Ichimoku we need more history
+                )
+                if synced_count > 0:
+                    app_logger.info(f"Synced {synced_count} candles for {Config.SYMBOL} {timeframe}")
+                else:
+                    app_logger.info(f"Data for {Config.SYMBOL} {timeframe} already up to date")
+            except Exception as e:
+                app_logger.error(f"Error syncing {timeframe} data: {str(e)}")
+
+        # Update last sync time
+        update_last_sync_time(now)
+    else:
+        app_logger.info("Historical data is already up to date")
 
 
-def take_account_snapshot():
+def get_last_sync_time():
+    """Get the timestamp of the last successful data sync.
+
+    Returns:
+        datetime or None: Last sync time or None if never synced
+    """
+    # We could create a separate table for this, but for simplicity
+    # we'll use a special account snapshot with a comment
+    session = DatabaseSession.get_session()
+    try:
+        sync_record = session.query(AccountSnapshot).filter(
+            AccountSnapshot.comment == "DATA_SYNC"
+        ).order_by(AccountSnapshot.timestamp.desc()).first()
+
+        if sync_record:
+            return sync_record.timestamp
+        return None
+    except Exception as e:
+        app_logger.warning(f"Error retrieving last sync time: {str(e)}")
+        return None
+    finally:
+        session.close()
+
+
+def update_last_sync_time(timestamp):
+    """Update the timestamp of the last successful data sync.
+
+    Args:
+        timestamp (datetime): The sync timestamp
+    """
+    session = DatabaseSession.get_session()
+    try:
+        # Create a special account snapshot to mark the sync time
+        sync_record = AccountSnapshot(
+            timestamp=timestamp,
+            balance=0,
+            equity=0,
+            margin=0,
+            free_margin=0,
+            margin_level=0,
+            open_positions=0,
+            comment="DATA_SYNC"
+        )
+        session.add(sync_record)
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        app_logger.warning(f"Error updating last sync time: {str(e)}")
+    finally:
+        session.close()
+
+
+def take_account_snapshot(connector, account_repo):
     """Take a snapshot of the current account state."""
     try:
-        connector = container.mt5_connector()
         account_info = connector.get_account_info()
 
         # Get open positions count
@@ -130,23 +170,28 @@ def take_account_snapshot():
         )
 
         # Save to database
-        account_repo = container.account_repository()
         account_repo.add(snapshot)
 
-        app_logger.debug(f"Account snapshot taken: balance={account_info['balance']}, equity={account_info['equity']}")
+        app_logger.debug(
+            f"Account snapshot: balance=${account_info['balance']:.2f}, equity=${account_info['equity']:.2f}")
 
     except Exception as e:
         app_logger.error(f"Error taking account snapshot: {str(e)}")
 
 
-def run_strategies():
-    """Run all enabled trading strategies."""
+def run_strategies(enabled_strategies, container, signal_repo, simulation_mode=False):
+    """Run all enabled trading strategies.
+
+    Args:
+        enabled_strategies (list): List of enabled strategy names
+        container: The dependency injection container
+        signal_repo: The signal repository
+        simulation_mode (bool): Whether to run in simulation mode
+
+    Returns:
+        int: Number of signals generated
+    """
     try:
-        signal_repo = container.signal_repository()
-
-        # Get strategies from config
-        enabled_strategies = Config.STRATEGIES_ENABLED
-
         generated_signals = []
 
         # Run Moving Average strategy if enabled
@@ -156,6 +201,8 @@ def run_strategies():
 
             # Save signals to database
             for signal in signals:
+                if simulation_mode:
+                    signal.comment = "SIMULATION_MODE"
                 signal_repo.add(signal)
                 generated_signals.append(signal)
 
@@ -166,6 +213,8 @@ def run_strategies():
 
             # Save signals to database
             for signal in signals:
+                if simulation_mode:
+                    signal.comment = "SIMULATION_MODE"
                 signal_repo.add(signal)
                 generated_signals.append(signal)
 
@@ -176,6 +225,8 @@ def run_strategies():
 
             # Save signals to database
             for signal in signals:
+                if simulation_mode:
+                    signal.comment = "SIMULATION_MODE"
                 signal_repo.add(signal)
                 generated_signals.append(signal)
 
@@ -186,6 +237,8 @@ def run_strategies():
 
             # Save signals to database
             for signal in signals:
+                if simulation_mode:
+                    signal.comment = "SIMULATION_MODE"
                 signal_repo.add(signal)
                 generated_signals.append(signal)
 
@@ -196,11 +249,14 @@ def run_strategies():
 
             # Save signals to database
             for signal in signals:
+                if simulation_mode:
+                    signal.comment = "SIMULATION_MODE"
                 signal_repo.add(signal)
                 generated_signals.append(signal)
 
         if generated_signals:
-            app_logger.info(f"Generated {len(generated_signals)} total signals")
+            signal_types = [s.signal_type for s in generated_signals]
+            app_logger.info(f"Generated {len(generated_signals)} signals: {signal_types}")
 
     except Exception as e:
         app_logger.error(f"Error running strategies: {str(e)}")
@@ -209,19 +265,42 @@ def run_strategies():
     return len(generated_signals)
 
 
-def process_trades():
+def process_trades(order_manager, trailing_stop_manager, simulation_mode=False):
     """Process pending signals and manage open trades."""
     try:
+        if simulation_mode:
+            app_logger.info("Simulation mode: skipping real trade execution")
+            return
+
         # Process pending signals
-        order_manager = container.order_manager()
         order_manager.process_pending_signals()
 
         # Update trailing stops
-        trailing_stop_manager = container.trailing_stop_manager()
         trailing_stop_manager.update_trailing_stops()
 
     except Exception as e:
         app_logger.error(f"Error processing trades: {str(e)}")
+
+
+def configure_logging(verbose=False):
+    """Configure logging level based on verbose flag."""
+    import logging
+
+    # Set console handler to INFO by default or DEBUG if verbose
+    log_level = logging.DEBUG if verbose else logging.INFO
+
+    # Get the root logger
+    root_logger = logging.getLogger()
+
+    # Set the level for the console handler
+    for handler in root_logger.handlers:
+        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+            handler.setLevel(log_level)
+
+    # Silence specific loggers that are too verbose
+    logging.getLogger('sqlalchemy.engine').setLevel(logging.WARNING)
+
+    app_logger.info(f"Logging configured: {'verbose' if verbose else 'normal'} mode")
 
 
 def main():
@@ -237,24 +316,81 @@ def main():
 
     # Set environment
     os.environ['TRADING_BOT_ENV'] = args.env
+
+    # Configure container
+    container = Container()
+    container.config.from_dict({
+        # General settings
+        "app_name": Config.APP_NAME,
+        "version": Config.VERSION,
+        "symbol": Config.SYMBOL,
+
+        # Moving Average Strategy settings
+        "ma_timeframe": Config.MA_TIMEFRAME,
+        "ma_fast_period": Config.MA_FAST_PERIOD,
+        "ma_slow_period": Config.MA_SLOW_PERIOD,
+
+        # Breakout Strategy settings
+        "bo_timeframe": Config.BO_TIMEFRAME,
+        "bo_lookback_periods": Config.BO_LOOKBACK_PERIODS,
+        "bo_min_range_bars": Config.BO_MIN_RANGE_BARS,
+        "bo_volume_threshold": Config.BO_VOLUME_THRESHOLD,
+
+        # Range-Bound Strategy settings
+        "rb_timeframe": Config.RB_TIMEFRAME,
+        "rb_lookback_periods": Config.RB_LOOKBACK_PERIODS,
+        "rb_min_range_bars": Config.RB_MIN_RANGE_BARS,
+        "rb_rsi_period": Config.RB_RSI_PERIOD,
+        "rb_rsi_overbought": Config.RB_RSI_OVERBOUGHT,
+        "rb_rsi_oversold": Config.RB_RSI_OVERSOLD,
+        "rb_adx_period": Config.RB_ADX_PERIOD,
+        "rb_adx_threshold": Config.RB_ADX_THRESHOLD,
+
+        # Momentum Scalping Strategy settings
+        "ms_timeframe": Config.MS_TIMEFRAME,
+        "ms_ema_period": Config.MS_EMA_PERIOD,
+        "ms_macd_fast": Config.MS_MACD_FAST,
+        "ms_macd_slow": Config.MS_MACD_SLOW,
+        "ms_macd_signal": Config.MS_MACD_SIGNAL,
+
+        # Ichimoku Strategy settings
+        "ic_timeframe": Config.IC_TIMEFRAME,
+        "ic_tenkan_period": Config.IC_TENKAN_PERIOD,
+        "ic_kijun_period": Config.IC_KIJUN_PERIOD,
+        "ic_senkou_b_period": Config.IC_SENKOU_B_PERIOD
+    })
+
+    # Configure logging based on verbosity flag
+    configure_logging(args.verbose)
+
     app_logger.info(f"Starting {Config.APP_NAME} v{Config.VERSION} in {args.env} environment")
+    app_logger.info(f"Trading mode: {'SIMULATION' if args.no_trade else 'LIVE'}")
 
-    # Initialize database if requested
-    if args.init_db:
-        initialize_database()
-
-    # Sync historical data if requested
-    if args.sync_data:
-        sync_historical_data()
+    # Initialize database automatically (no need for --init-db flag)
+    initialize_database()
 
     # Connect to MT5
     try:
         connector = container.mt5_connector()
         account_info = connector.get_account_info()
-        app_logger.info(f"Connected to MetaTrader 5 successfully. Account balance: {account_info['balance']}")
+        app_logger.info(f"Connected to MetaTrader 5 successfully. Account balance: ${account_info['balance']:.2f}")
     except Exception as e:
         app_logger.error(f"Failed to connect to MetaTrader 5: {str(e)}")
         return 1
+
+    # Initialize repositories
+    signal_repo = container.signal_repository()
+    account_repo = container.account_repository()
+
+    # Initialize data fetcher
+    data_fetcher = container.data_fetcher()
+
+    # Sync historical data automatically (no need for --sync-data flag)
+    sync_historical_data(data_fetcher)
+
+    # Initialize trade processors
+    order_manager = container.order_manager()
+    trailing_stop_manager = container.trailing_stop_manager()
 
     # Main loop
     last_snapshot_time = datetime.min
@@ -266,7 +402,10 @@ def main():
     last_trade_time = datetime.min
     trade_interval = timedelta(seconds=30)  # Process trades every 30 seconds
 
-    app_logger.info("Entering main loop...")
+    last_sync_check_time = datetime.min
+    sync_check_interval = timedelta(hours=4)  # Check if sync needed every 4 hours
+
+    app_logger.info("Bot is now running. Press Ctrl+C to stop.")
 
     try:
         while running:
@@ -277,18 +416,32 @@ def main():
 
             # Take account snapshot at regular intervals
             if now - last_snapshot_time > snapshot_interval:
-                take_account_snapshot()
+                take_account_snapshot(connector, account_repo)
                 last_snapshot_time = now
 
             # Run strategies at regular intervals
             if now - last_strategy_time > strategy_interval:
-                run_strategies()
+                run_strategies(
+                    Config.STRATEGIES_ENABLED,
+                    container,
+                    signal_repo,
+                    simulation_mode=args.no_trade
+                )
                 last_strategy_time = now
 
             # Process trades and update trailing stops at regular intervals
             if now - last_trade_time > trade_interval:
-                process_trades()
+                process_trades(
+                    order_manager,
+                    trailing_stop_manager,
+                    simulation_mode=args.no_trade
+                )
                 last_trade_time = now
+
+            # Periodically check if we need to sync data
+            if now - last_sync_check_time > sync_check_interval:
+                sync_historical_data(data_fetcher)
+                last_sync_check_time = now
 
             # Sleep to avoid high CPU usage
             time.sleep(1)

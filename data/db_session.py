@@ -26,7 +26,7 @@ class DatabaseSession:
         if database_uri is None:
             database_uri = Config.DATABASE_URI
 
-        app_logger.info(f"Initializing database connection to: {database_uri}")
+        app_logger.info(f"Initializing database connection")
 
         try:
             # Create engine with appropriate settings
@@ -34,7 +34,8 @@ class DatabaseSession:
                 database_uri,
                 pool_pre_ping=True,  # Test connections before using them
                 pool_recycle=3600,  # Recycle connections after an hour
-                echo=Config.LOG_LEVEL == "DEBUG"  # Log SQL if in DEBUG mode
+                echo=False,  # Disable SQL logging regardless of log level
+                echo_pool=False  # Disable connection pool logging
             )
 
             # Create session factory
@@ -46,7 +47,7 @@ class DatabaseSession:
                 )
             )
 
-            app_logger.info("Database session initialized successfully")
+            app_logger.debug("Database session initialized successfully")
 
         except Exception as e:
             app_logger.error(f"Failed to initialize database: {str(e)}")

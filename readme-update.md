@@ -33,140 +33,57 @@ A robust, modular Python trading bot for automated XAU/USD (Gold) trading using 
   - Unit test coverage with pytest
   - Multiple environment configurations (dev, prod, test)
 
-## Project Structure
+## Quick Start
 
-```
-xauusd-trading-bot/
-├── config/
-│   ├── __init__.py
-│   ├── base_config.py
-│   ├── development.py
-│   ├── production.py
-│   └── testing.py
-├── data/
-│   ├── __init__.py
-│   ├── db_session.py
-│   ├── models.py
-│   └── repository.py
-├── execution/
-│   ├── __init__.py
-│   ├── order_manager.py
-│   └── trailing_stop.py
-├── logging/
-│   ├── __init__.py
-│   └── logger.py
-├── mt5_connector/
-│   ├── __init__.py
-│   ├── connection.py
-│   └── data_fetcher.py
-├── risk_management/
-│   ├── __init__.py
-│   ├── position_sizing.py
-│   └── risk_validator.py
-├── strategies/
-│   ├── __init__.py
-│   ├── base_strategy.py
-│   ├── breakout.py
-│   ├── ichimoku.py
-│   ├── momentum_scalping.py
-│   ├── moving_average.py
-│   └── range_bound.py
-├── tests/
-│   ├── test_breakout_strategy.py
-│   ├── test_ichimoku_strategy.py
-│   ├── test_momentum_scalping_strategy.py
-│   ├── test_moving_average_strategy.py
-│   └── test_range_bound_strategy.py
-├── container.py
-├── main.py
-└── requirements.txt
-```
-
-## Setup and Installation
-
-### Prerequisites
-
-- Python 3.8 or higher
-- MetaTrader 5 terminal installed
-- SQL Server or compatible database
-
-### Installation Steps
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/xauusd-trading-bot.git
-   cd xauusd-trading-bot
-   ```
-
-2. Create and activate a virtual environment:
-   ```bash
-   python -m venv .venv
-   # On Windows
-   .venv\Scripts\activate
-   # On macOS/Linux
-   source .venv/bin/activate
-   ```
-
-3. Install dependencies:
+1. Make sure MetaTrader 5 is installed and configured with an account
+2. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
 
-4. Configure the database connection in `config/development.py` or `config/production.py`.
+3. Edit configuration in `config/development.py` or `config/production.py`
+   - Set MT5 terminal path, login, password, and server
+   - Configure database settings
+   - Adjust risk parameters if needed
 
-5. Configure MetaTrader 5 settings in the same configuration files.
+4. Run the bot:
+   ```bash
+   # For normal mode
+   python main.py
 
-## Configuration
+   # For verbose logging
+   python main.py --verbose
 
-Edit the appropriate configuration file based on your environment:
+   # For simulation mode (no real trades)
+   python main.py --no-trade
+   
+   # For production environment
+   python main.py --env production
+   ```
 
-```python
-# Example configuration settings
+## Usage Options
 
-# MT5 settings
-MT5_TERMINAL_PATH = r"C:\Program Files\MetaTrader 5\terminal64.exe"
-MT5_LOGIN = 12345678
-MT5_PASSWORD = "your_password"
-MT5_SERVER = "BrokerName-Live"
+The bot has been improved to work with minimal configuration:
 
-# Database settings
-DB_SERVER = "localhost"
-DB_NAME = "XAUUSDTradingBot"
-DB_USERNAME = "your_username"
-DB_PASSWORD = "your_password"
+- **Automatic Initialization**: The database is automatically initialized the first time you run the bot
+- **Automatic Data Sync**: Historical data is synced automatically when you start the bot
+- **Simulation Mode**: Use `--no-trade` to run without placing real trades (signals are still generated)
+- **Verbosity Control**: Use `--verbose` to see detailed logs, or omit for minimal output
 
-# Risk management
-MAX_RISK_PER_TRADE_PERCENT = 1.0
-MAX_DAILY_RISK_PERCENT = 5.0
-MAX_DRAWDOWN_PERCENT = 15.0
-MAX_POSITIONS = 5
+## Project Structure
 
-# Strategy settings
-STRATEGIES_ENABLED = ["moving_average", "breakout", "range_bound", "momentum_scalping", "ichimoku"]
 ```
-
-## Usage
-
-### Running the Bot
-
-```bash
-# For development environment
-python main.py --env development
-
-# For production environment
-python main.py --env production
-
-# Initialize database schema
-python main.py --init-db
-
-# Sync historical data
-python main.py --sync-data
-```
-
-### Running Tests
-
-```bash
-python -m pytest tests/
+xauusd-trading-bot/
+├── config/                 # Configuration files
+├── custom_logging/         # Logging functionality
+├── data/                   # Database models and repositories
+├── execution/              # Order execution and management
+├── mt5_connector/          # MetaTrader 5 connectivity
+├── risk_management/        # Risk validation and position sizing
+├── strategies/             # Trading strategy implementations
+├── tests/                  # Unit tests
+├── main.py                 # Main application entry point
+└── requirements.txt        # Dependencies
 ```
 
 ## Trading Strategies Details
@@ -241,9 +158,3 @@ The bot incorporates multiple layers of risk management:
 ## License
 
 MIT License
-
-## Acknowledgments
-
-- MetaTrader 5 for providing the trading API
-- SQLAlchemy for database ORM
-- Dependency Injector for clean architecture

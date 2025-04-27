@@ -141,7 +141,7 @@ class MT5DataFetcher:
             if error_code == 0:  # No error, just no data
                 app_logger.warning(f"No data found for {symbol} {timeframe} from {from_date} to {to_date}")
                 return []
-            error_msg = f"Failed to get OHLC data for {symbol} {timeframe}: Error code {error_code}"
+            error_msg = f"Failed to get OHLC data: Error code {error_code}"
             app_logger.error(error_msg)
             raise RuntimeError(error_msg)
 
@@ -190,7 +190,7 @@ class MT5DataFetcher:
         from_date = datetime.utcnow() - timedelta(days=days_back)
         to_date = datetime.utcnow()
 
-        app_logger.info(f"Syncing missing {timeframe} data for {symbol} from {from_date} to {to_date}")
+        app_logger.debug(f"Syncing missing {timeframe} data for {symbol}")
 
         # First, get existing data from the database
         existing_data = self.repository.get_candles_range(
@@ -219,7 +219,9 @@ class MT5DataFetcher:
                 self.repository.add(candle)
                 synced_count += 1
 
-        app_logger.info(f"Synced {synced_count} missing candles for {symbol} {timeframe}")
+        if synced_count > 0:
+            app_logger.debug(f"Synced {synced_count} missing candles for {symbol} {timeframe}")
+
         return synced_count
 
     def get_latest_data_to_dataframe(self, symbol, timeframe, count=100):

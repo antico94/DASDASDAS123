@@ -1,4 +1,4 @@
-# execution/enhanced_order_manager.py
+# execution/order_manager.py
 import json
 import time
 from datetime import datetime
@@ -50,6 +50,13 @@ class EnhancedOrderManager:
         processed_count = 0
         for signal in pending_signals:
             try:
+                # Skip signals marked as simulation only
+                if signal.comment == "SIMULATION_MODE":
+                    self.logger.info(f"Skipping signal {signal.id} marked as simulation")
+                    self.signal_repository.mark_as_executed(signal.id)
+                    processed_count += 1
+                    continue
+
                 # Process the signal
                 success = self._execute_signal(signal)
 
@@ -60,11 +67,9 @@ class EnhancedOrderManager:
             except Exception as e:
                 self.logger.error(f"Error processing signal {signal.id}: {str(e)}")
 
-        self.logger.info(f"Processed {processed_count} signals")
+        if processed_count > 0:
+            self.logger.info(f"Processed {processed_count} signals")
         return processed_count
-
-    # execution/order_manager.py - _execute_signal method
-    # execution/enhanced_order_manager.py (excerpt - update metadata references only)
 
     def _execute_signal(self, signal):
         """Execute a trading signal with enhanced trade management.
@@ -78,8 +83,8 @@ class EnhancedOrderManager:
         self.logger.info(f"Executing signal {signal.id}: {signal.signal_type} for {signal.symbol}")
 
         try:
-            # Parse metadata - use 'metadata' instead of 'signal_metadata'
-            metadata = json.loads(signal.metadata or "{}")
+            # Parse metadata
+            metadata = json.loads(signal.signal_data or "{}")
 
             if signal.signal_type in ["BUY", "SELL"]:
                 # Entry signal
@@ -244,11 +249,10 @@ class EnhancedOrderManager:
             self.trade_repository.add(trade_2)
 
             self.logger.info(
-                f"Successfully executed {signal.signal_type} with partial profit strategy: "
-                f"position 1: price={order_result_1['price']}, volume={position_size_1}, "
-                f"SL={stop_loss}, TP1={take_profit_1}, "
-                f"position 2: price={order_result_2['price']}, volume={position_size_2}, "
-                f"SL={stop_loss}, TP2={take_profit_2}"
+                f"Successfully executed {signal.signal_type} with partial profit: "
+                f"position 1: {position_size_1} lots at ${order_result_1['price']:.2f}, "
+                f"TP=${take_profit_1:.2f}, position 2: {position_size_2} lots at ${order_result_2['price']:.2f}, "
+                f"TP=${take_profit_2:.2f}"
             )
 
             return True
@@ -318,9 +322,8 @@ class EnhancedOrderManager:
             self.trade_repository.add(trade)
 
             self.logger.info(
-                f"Successfully executed {signal.signal_type} order for {signal.symbol}: "
-                f"price={order_result['price']}, volume={position_size}, "
-                f"SL={stop_loss}, TP={take_profit}"
+                f"Executed {signal.signal_type} order: {position_size} lots of {signal.symbol} "
+                f"at ${order_result['price']:.2f}, SL=${stop_loss:.2f}, TP=${take_profit:.2f}"
             )
 
             return True
@@ -380,8 +383,8 @@ class EnhancedOrderManager:
                             break
 
                     self.logger.info(
-                        f"Closed position {position['ticket']} for {signal.symbol} at {close_result['close_price']}, "
-                        f"profit: {close_result['profit']}"
+                        f"Closed position {position['ticket']} at ${close_result['close_price']:.2f}, "
+                        f"profit: ${close_result['profit']:.2f}"
                     )
                     closed_count += 1
 
@@ -419,7 +422,7 @@ class EnhancedOrderManager:
 
         # Validate take profit (ensure it's reasonable)
         if risk <= 0:
-            self.logger.warning(f"Invalid risk calculation: entry={entry_price}, stop={stop_loss}")
+            self.logger.warning(f"Invalid risk calculation: entry=${entry_price:.2f}, stop=${stop_loss:.2f}")
             # Use a default 1% move if risk calculation failed
             if order_type == 0:  # BUY
                 take_profit = entry_price * 1.01
@@ -429,7 +432,7 @@ class EnhancedOrderManager:
         # Log the calculation
         self.logger.debug(
             f"Calculated default take profit for {order_type}: "
-            f"entry={entry_price}, stop={stop_loss}, take_profit={take_profit}"
+            f"entry=${entry_price:.2f}, stop=${stop_loss:.2f}, take_profit=${take_profit:.2f}"
         )
 
         return take_profit

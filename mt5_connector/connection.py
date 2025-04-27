@@ -28,10 +28,10 @@ class MT5Connector:
 
     def _initialize_mt5(self):
         """Initialize the connection to the MT5 terminal."""
-        app_logger.info("Initializing connection to MetaTrader 5...")
+        app_logger.info("Connecting to MetaTrader 5...")
 
         if not os.path.exists(Config.MT5_TERMINAL_PATH):
-            error_msg = f"MT5 terminal path does not exist: {Config.MT5_TERMINAL_PATH}"
+            error_msg = f"MT5 terminal path not found: {Config.MT5_TERMINAL_PATH}"
             app_logger.error(error_msg)
             raise ValueError(error_msg)
 
@@ -43,17 +43,17 @@ class MT5Connector:
                 server=Config.MT5_SERVER
         ):
             error_code = mt5.last_error()
-            error_msg = f"Failed to initialize MT5: Error code {error_code}"
+            error_msg = f"Failed to connect to MT5: Error code {error_code}"
             app_logger.error(error_msg)
             raise ConnectionError(error_msg)
 
-        app_logger.info("MetaTrader 5 connection initialized successfully")
+        app_logger.info("MetaTrader 5 connected successfully")
         self._is_connected = True
 
     def ensure_connection(self):
         """Ensure the connection to MT5 is active, reconnect if necessary."""
         if not self._is_connected or not mt5.terminal_info():
-            app_logger.warning("MT5 connection lost, attempting to reconnect...")
+            app_logger.warning("MT5 connection lost, reconnecting...")
             mt5.shutdown()
             time.sleep(1)
             self._initialize_mt5()
@@ -105,7 +105,7 @@ class MT5Connector:
         symbol_info = mt5.symbol_info(symbol)
         if symbol_info is None:
             error_code = mt5.last_error()
-            error_msg = f"Failed to get symbol info for {symbol}: Error code {error_code}"
+            error_msg = f"Failed to get info for {symbol}: Error code {error_code}"
             app_logger.error(error_msg)
             raise ValueError(error_msg)
 
@@ -229,7 +229,8 @@ class MT5Connector:
         }
 
         # Send order
-        app_logger.info(f"Sending {('BUY' if order_type == 0 else 'SELL')} order for {volume} lots of {symbol}")
+        order_desc = 'BUY' if order_type == 0 else 'SELL'
+        app_logger.info(f"Placing {order_desc} order: {volume} lots of {symbol} at ${price:.2f}")
         result = mt5.order_send(request)
 
         if result.retcode != mt5.TRADE_RETCODE_DONE:
@@ -237,7 +238,7 @@ class MT5Connector:
             app_logger.error(error_msg)
             raise RuntimeError(error_msg)
 
-        app_logger.info(f"Order successfully placed with ticket: {result.order}")
+        app_logger.info(f"Order placed successfully: Ticket #{result.order}")
 
         return {
             'ticket': result.order,
@@ -278,7 +279,7 @@ class MT5Connector:
 
         # No changes needed
         if sl == position.sl and tp == position.tp:
-            app_logger.debug(f"No changes to position {ticket}, skipping modification")
+            app_logger.debug(f"No changes needed for position {ticket}")
             return True
 
         # Create modification request
@@ -290,7 +291,7 @@ class MT5Connector:
             "tp": tp
         }
 
-        app_logger.info(f"Modifying position {ticket}: SL={sl}, TP={tp}")
+        app_logger.debug(f"Modifying position {ticket}: SL=${sl:.2f}, TP=${tp:.2f}")
         result = mt5.order_send(request)
 
         if result.retcode != mt5.TRADE_RETCODE_DONE:
@@ -298,7 +299,7 @@ class MT5Connector:
             app_logger.error(error_msg)
             raise RuntimeError(error_msg)
 
-        app_logger.info(f"Position {ticket} successfully modified")
+        app_logger.info(f"Position {ticket} modified: SL=${sl:.2f}, TP=${tp:.2f}")
         return True
 
     def close_position(self, ticket, volume=None):
@@ -354,7 +355,7 @@ class MT5Connector:
             app_logger.error(error_msg)
             raise RuntimeError(error_msg)
 
-        app_logger.info(f"Position {ticket} successfully closed: volume={close_volume}")
+        app_logger.info(f"Position {ticket} closed: price=${result.price:.2f}, profit=${result.profit:.2f}")
 
         return {
             'ticket': ticket,

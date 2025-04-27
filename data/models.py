@@ -27,7 +27,6 @@ class OHLCData(Base):
         return f"<OHLCData(symbol='{self.symbol}', timeframe='{self.timeframe}', timestamp='{self.timestamp}')>"
 
 
-# In data/models.py
 class StrategySignal(Base):
     """Model for strategy-generated trading signals."""
 
@@ -41,9 +40,9 @@ class StrategySignal(Base):
     signal_type = Column(String(20), nullable=False)  # 'BUY', 'SELL', 'CLOSE', etc.
     price = Column(Float, nullable=False)
     strength = Column(Float)  # Signal strength/confidence (0-1)
-    # Rename metadata to signal_data since metadata is a reserved keyword in SQLAlchemy
     signal_data = Column(String(1000))  # JSON string with additional signal data
     is_executed = Column(Boolean, default=False)
+    comment = Column(String(100))  # Additional comment like "SIMULATION_MODE"
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     def __repr__(self):
@@ -94,6 +93,7 @@ class AccountSnapshot(Base):
     free_margin = Column(Float)
     margin_level = Column(Float)
     open_positions = Column(Integer)
+    comment = Column(String(255))  # Can be used for special records like "DATA_SYNC"
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     def __repr__(self):
