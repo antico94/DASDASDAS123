@@ -278,6 +278,76 @@ class TestBreakoutStrategy(unittest.TestCase):
         signals = self.strategy.analyze(data)
         self.assertEqual(len(signals), 0)
 
+    # Additional tests for test_breakout_strategy.py
+
+    def test_calculate_indicators_with_minimal_data(self):
+        """Test calculation with minimal but valid data."""
+        # Create dataset with just enough data
+        min_candles = self.strategy.min_required_candles
+        dates = [datetime.now() - timedelta(minutes=15 * i) for i in range(min_candles, 0, -1)]
+        data = pd.DataFrame({
+            'open': np.random.normal(1800, 5, min_candles),
+            'high': np.random.normal(1810, 5, min_candles),
+            'low': np.random.normal(1790, 5, min_candles),
+            'close': np.random.normal(1800, 5, min_candles),
+            'volume': np.random.normal(1000, 100, min_candles)
+        }, index=dates)
+
+        # Calculate indicators
+        result = self.strategy.calculate_indicators(data)
+
+        # Verify minimum required columns are present
+        self.assertIn('atr', result.columns)
+        self.assertIn('volume_ma', result.columns)
+        self.assertIn('bb_width', result.columns)
+        self.assertIn('in_range', result.columns)
+
+    def test_analyze_with_edge_cases(self):
+        """Test analyze method with edge case data."""
+        # Create data with extreme values
+        dates = [datetime.now() - timedelta(minutes=15 * i) for i in range(100, 0, -1)]
+        data = pd.DataFrame({
+            'open': np.random.normal(1800, 10, 100),
+            'high': np.random.normal(1810, 10, 100),
+            'low': np.random.normal(1790, 10, 100),
+            'close': np.random.normal(1800, 10, 100),
+            'volume': np.random.normal(1000, 100, 100)
+        }, index=dates)
+
+        # Add NaN values
+        data.loc[data.index[30], 'close'] = np.nan
+
+        # Create mocked version of processed data with the result containing a breakout signal
+        processed_data = data.copy()
+        processed_data['in_range'] = True
+        processed_data['breakout_signal'] = 0
+        processed_data['breakout_strength'] = 0.0
+        processed_data['breakout_stop_loss'] = np.nan
+        processed_data['atr'] = 10.0
+
+        # Make the last row have a breakout signal
+        processed_data.loc[processed_data.index[-1], 'breakout_signal'] = 1
+        processed_data.loc[processed_data.index[-1], 'breakout_strength'] = 0.8
+        processed_data.loc[processed_data.index[-1], 'breakout_stop_loss'] = 1798.0
+        processed_data.loc[processed_data.index[-1], 'range_top'] = 1810.0
+        processed_data.loc[processed_data.index[-1], 'range_bottom'] = 1790.0
+        processed_data.loc[processed_data.index[-1], 'range_bars'] = 20
+
+        # Mock the calculate_indicators method
+        with patch.object(self.strategy, 'calculate_indicators', return_value=processed_data):
+            with patch.object(self.strategy, 'create_signal') as mock_create_signal:
+                # Set up mock to return a proper signal
+                mock_signal = MagicMock()
+                mock_signal.signal_type = "BUY"
+                mock_create_signal.return_value = mock_signal
+
+                # Call analyze
+                signals = self.strategy.analyze(data)
+
+                # Verify signal was created
+                self.assertEqual(len(signals), 1)
+                mock_create_signal.assert_called_once()
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -326,6 +326,52 @@ class TestIchimokuStrategy(unittest.TestCase):
         """Call the strategy's _identify_signals method on the data."""
         return self.strategy._identify_signals(data)
 
+    # Additional tests for test_ichimoku_strategy.py
+
+    def test_calculate_indicators_edge_cases(self):
+        """Test edge cases in indicator calculation."""
+        # Create data with edge cases
+        dates = [datetime.now() - timedelta(hours=i) for i in range(200, 0, -1)]
+        data = pd.DataFrame({
+            'open': np.random.normal(1800, 10, 200),
+            'high': np.random.normal(1810, 10, 200),
+            'low': np.random.normal(1790, 10, 200),
+            'close': np.random.normal(1800, 10, 200),
+            'volume': np.random.normal(1000, 100, 200)
+        }, index=dates)
+
+        # Add some extreme values
+        data.loc[data.index[50], 'high'] = 10000  # Very high spike
+        data.loc[data.index[60], 'low'] = 1  # Very low spike
+        data.loc[data.index[70], 'close'] = np.nan  # NaN value
+
+        # Calculate indicators (should handle these cases)
+        result = self.strategy.calculate_indicators(data)
+
+        # Verify the calculations didn't fail
+        self.assertEqual(len(result), len(data))
+        self.assertIn('tenkan_sen', result.columns)
+        self.assertIn('kijun_sen', result.columns)
+        self.assertIn('senkou_span_a', result.columns)
+        self.assertIn('senkou_span_b', result.columns)
+
+    def test_analyze_with_insufficient_data(self):
+        """Test analyze method with insufficient data."""
+        # Create small dataset
+        small_data = pd.DataFrame({
+            'open': [1800, 1801, 1802],
+            'high': [1810, 1811, 1812],
+            'low': [1790, 1791, 1792],
+            'close': [1805, 1806, 1807],
+            'volume': [1000, 1000, 1000]
+        })
+
+        # Call analyze with small dataset
+        signals = self.strategy.analyze(small_data)
+
+        # Should return empty list due to insufficient data
+        self.assertEqual(len(signals), 0)
+
 
 if __name__ == '__main__':
     unittest.main()

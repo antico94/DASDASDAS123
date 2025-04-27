@@ -260,6 +260,66 @@ class TestMomentumScalpingStrategy(unittest.TestCase):
         signals = self.strategy.analyze(data)
         self.assertEqual(len(signals), 0)
 
+    # Additional tests for test_momentum_scalping_strategy.py
+
+    def test_identify_signals_edge_cases(self):
+        """Test edge cases in the signal identification logic."""
+        # Create a basic dataset
+        dates = [datetime.now() - timedelta(minutes=5 * i) for i in range(100, 0, -1)]
+        data = pd.DataFrame({
+            'open': np.random.normal(1800, 10, 100),
+            'high': np.random.normal(1810, 10, 100),
+            'low': np.random.normal(1790, 10, 100),
+            'close': np.random.normal(1800, 10, 100),
+            'volume': np.random.normal(1000, 100, 100)
+        }, index=dates)
+
+        # Add required columns for signal identification
+        data['ema'] = data['close'] + 5  # EMA above price
+        data['macd'] = np.zeros(100)
+        data['macd_signal'] = np.zeros(100)
+        data['macd_histogram'] = np.zeros(100)
+        data['atr'] = np.ones(100) * 10
+        data['swing_high'] = data['high'] + 10
+        data['swing_low'] = data['low'] - 10
+        data['prior_trend'] = np.zeros(100)
+
+        # Create edge case: Extremely large values
+        data.loc[data.index[50], 'high'] = 100000
+        data.loc[data.index[50], 'close'] = 100000
+
+        # Create edge case: Very small values
+        data.loc[data.index[60], 'low'] = 0.001
+        data.loc[data.index[60], 'close'] = 0.001
+
+        # Create edge case: NaN values
+        data.loc[data.index[70], 'ema'] = np.nan
+        data.loc[data.index[71], 'macd_histogram'] = np.nan
+
+        # Test the method
+        result = self.strategy._identify_signals(data)
+
+        # Verify it ran without errors
+        self.assertEqual(len(result), len(data))
+        self.assertIn('signal', result.columns)
+
+    def test_analyze_with_invalid_data(self):
+        """Test the analyze method with invalid data inputs."""
+        # Case 1: None input
+        signals = self.strategy.analyze(None)
+        self.assertEqual(len(signals), 0)
+
+        # Case 2: Empty DataFrame
+        signals = self.strategy.analyze(pd.DataFrame())
+        self.assertEqual(len(signals), 0)
+
+        # Case 3: DataFrame without required columns
+        bad_data = pd.DataFrame({
+            'some_column': [1, 2, 3]
+        })
+        signals = self.strategy.analyze(bad_data)
+        self.assertEqual(len(signals), 0)
+
 
 if __name__ == '__main__':
     unittest.main()
