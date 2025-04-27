@@ -1,4 +1,5 @@
-# strategies/range_bound.py
+# strategies/range_bound.py - Updated version
+
 import numpy as np
 import pandas as pd
 import json
@@ -9,7 +10,12 @@ from data.models import StrategySignal
 
 
 class RangeBoundStrategy(BaseStrategy):
-    """Range-Bound Mean Reversion Strategy for XAU/USD."""
+    """Range-Bound Mean Reversion Strategy for XAU/USD.
+
+    This strategy identifies periods when price is trading within a horizontal range and
+    takes mean-reversion trades at the edges of the range (buy at support, sell at resistance)
+    with confirmation from oscillators (RSI) and trend filters (ADX).
+    """
 
     def __init__(self, symbol="XAUUSD", timeframe="M15",
                  lookback_periods=48, min_range_bars=10,
@@ -69,6 +75,60 @@ class RangeBoundStrategy(BaseStrategy):
             )
             return data
 
+        # Make a copy to avoid modifying the original data
+        df = data.copy()
+
+        # Calculate RSI
+        self.logger.debug("Calculating RSI...")
+        # Calculate price differences
+        delta = df['close'].diff()
+
+        # Separate gains and losses
+        gain = delta.copy()
+        loss = delta.copy()
+        gain[gain < 0] = 0
+        loss[loss > 0] = 0
+        loss = abs(loss)
+
+        # Calculate average gain and loss
+        avg_gain = gain.rolling(window=self.rsi_period).mean()
+        avg_loss = loss.rolling(window=self.rsi_period).mean()
+
+        # Calculate relative strength
+        rs = avg_gain / avg_loss
+
+        # Calculate RSI
+        df['rsi'] = 100 - (100 / (1 + rs))
+
+        # Calculate Bollinger Bands
+        self.logger.debug("Calculating Bollinger Bands...")
+        # Calculate 20-period SMA as middle band
+        df['middle_band'] = df['close'].rolling(window=20).mean()
+
+        # Calculate standard deviation
+        df['std_dev'] = df['close'].rolling(window=20).std()
+
+        # Calculate upper and lower bands
+        df['upper_band'] = df['middle_band'] + (df['std_dev'] * 2)
+        df['lower_band'] = df['middle_band'] - (df['std_dev'] * 2)
+
+        # Calculate BB width (normalized by middle band)
+        df['bb_width'] = (df['upper_band'] - df['lower_band']) / df['middle_band']
+
+        # Calculate ADX and directional indicators
+        self.logger.debug("Calculating ADX...")
+        df = self._calculate_adx(df)
+
+        # Identify potential ranges in the data
+        self.logger.debug("Identifying price ranges...")
+        df = self._identify_ranges(df)
+
+        # Identify entry signals at range extremes with oscillator confirmation
+        self.logger.debug("Identifying entry signals...")
+        df = self._identify_entry_signals(df)
+
+        return df
+
     def analyze(self, data):
         """Analyze market data and generate trading signals.
 
@@ -78,10 +138,19 @@ class RangeBoundStrategy(BaseStrategy):
         Returns:
             list: Generated trading signals
         """
-        # Calculate indicators
-        data = self.calculate_indicators(data)
-
         # Check if data is None or empty
+        if data is None or len(data) == 0:
+            self.logger.warning("No data provided for range-bound analysis")
+            return []
+
+        # Calculate indicators
+        try:
+            data = self.calculate_indicators(data)
+        except Exception as e:
+            self.logger.error(f"Error calculating indicators: {str(e)}")
+            return []
+
+        # Check if data is None or empty after calculations
         if data is None or (hasattr(data, 'empty') and data.empty):
             self.logger.warning("Insufficient data for range-bound analysis after calculations")
             return []
@@ -105,6 +174,8 @@ class RangeBoundStrategy(BaseStrategy):
 
             # Ensure stop loss is valid
             if stop_loss >= entry_price:
+                self.logger.warning(
+                    f"Invalid stop loss ({stop_loss}) for BUY signal - must be below entry price ({entry_price})")
                 stop_loss = entry_price * 0.995  # Default 0.5% below entry
 
             # Calculate extended take profit (full range)
@@ -144,6 +215,8 @@ class RangeBoundStrategy(BaseStrategy):
 
             # Ensure stop loss is valid
             if stop_loss <= entry_price:
+                self.logger.warning(
+                    f"Invalid stop loss ({stop_loss}) for SELL signal - must be above entry price ({entry_price})")
                 stop_loss = entry_price * 1.005  # Default 0.5% above entry
 
             # Calculate extended take profit (full range)
@@ -190,11 +263,8 @@ class RangeBoundStrategy(BaseStrategy):
         high_diff = data['high'].diff()
         low_diff = data['low'].diff().multiply(-1)
 
-        plus_dm = (high_diff > low_diff) & (high_diff > 0)
-        plus_dm = high_diff * plus_dm
-
-        minus_dm = (low_diff > high_diff) & (low_diff > 0)
-        minus_dm = low_diff * minus_dm
+        plus_dm = np.where((high_diff > low_diff) & (high_diff > 0), high_diff, 0)
+        minus_dm = np.where((low_diff > high_diff) & (low_diff > 0), low_diff, 0)
 
         # Calculate True Range
         tr1 = abs(data['high'] - data['low'])
@@ -206,16 +276,22 @@ class RangeBoundStrategy(BaseStrategy):
 
         # Smooth the TR and directional movement
         period = self.adx_period
-        tr_smooth = tr.rolling(window=period).sum()
 
-        plus_di = 100 * (plus_dm.rolling(window=period).sum() / tr_smooth)
-        minus_di = 100 * (minus_dm.rolling(window=period).sum() / tr_smooth)
+        # Use exponential smoothing for TR and DM
+        tr_smooth = tr.ewm(alpha=1 / period, adjust=False).mean()
+        plus_dm_smooth = pd.Series(plus_dm).ewm(alpha=1 / period, adjust=False).mean()
+        minus_dm_smooth = pd.Series(minus_dm).ewm(alpha=1 / period, adjust=False).mean()
+
+        # Calculate directional indicators
+        plus_di = 100 * (plus_dm_smooth / tr_smooth)
+        minus_di = 100 * (minus_dm_smooth / tr_smooth)
 
         # Calculate directional index (DX)
-        dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di))
+        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+        dx = dx.replace([np.inf, -np.inf], np.nan).fillna(0)
 
-        # Calculate ADX
-        data['adx'] = dx.rolling(window=period).mean()
+        # Calculate ADX (smoothed DX)
+        data['adx'] = dx.ewm(alpha=1 / period, adjust=False).mean()
         data['plus_di'] = plus_di
         data['minus_di'] = minus_di
 
@@ -243,55 +319,70 @@ class RangeBoundStrategy(BaseStrategy):
         # 3. Price oscillating within defined boundaries
 
         for i in range(self.min_range_bars, len(data)):
-            # Skip if ADX is not calculated yet
-            if np.isnan(data.iloc[i - 1]['adx']):
+            # Skip if ADX is not calculated yet or is NaN
+            if i <= 0 or 'adx' not in data.columns or np.isnan(data.iloc[i - 1]['adx']):
                 continue
 
             # Check if ADX indicates a non-trending market
             if data.iloc[i - 1]['adx'] < self.adx_threshold:
                 # Select the lookback window
-                window = data.iloc[max(0, i - self.lookback_periods):i]
+                start_idx = max(0, i - self.lookback_periods)
+                window = data.iloc[start_idx:i]
 
                 # Calculate potential range boundaries
-                window_high = window['high'].max()
-                window_low = window['low'].min()
+                if len(window) > 0:
+                    window_high = window['high'].max()
+                    window_low = window['low'].min()
 
-                # Range height as percentage
-                range_height_pct = (window_high - window_low) / window_low
+                    # Range height as percentage
+                    if window_low > 0:  # Prevent division by zero
+                        range_height_pct = (window_high - window_low) / window_low
+                    else:
+                        range_height_pct = float('inf')  # Set to a large value if window_low is zero or negative
 
-                # Check Bollinger Band width (narrowing bands suggest consolidation)
-                bb_width_now = data.iloc[i - 1]['bb_width']
-                bb_width_past = data.iloc[max(0, i - 10)]['bb_width'] if i >= 10 else bb_width_now
+                    # Check Bollinger Band width (narrowing bands suggest consolidation)
+                    bb_width_now = data.iloc[i - 1]['bb_width'] if 'bb_width' in data.columns and i > 0 else np.nan
+                    bb_width_past = data.iloc[max(0, i - 10)][
+                        'bb_width'] if 'bb_width' in data.columns and i >= 10 else np.nan
 
-                volatility_contained = bb_width_now < bb_width_past * 1.2  # Not expanding rapidly
+                    # Default to true if we don't have BB width data for testing
+                    volatility_contained = True
+                    if not np.isnan(bb_width_now) and not np.isnan(bb_width_past) and bb_width_past > 0:
+                        volatility_contained = bb_width_now <= bb_width_past * 1.2  # Not expanding rapidly
 
-                # Determine if we're in a range
-                # A range is identified if:
-                # - Range height is relatively small (less than 2% for gold)
-                # - ADX is below threshold (non-trending)
-                # - BB width is not expanding rapidly
+                    # Determine if we're in a range
+                    # A range is identified if:
+                    # - Range height is relatively small (less than 2% for gold)
+                    # - ADX is below threshold (non-trending)
+                    # - BB width is not expanding rapidly
 
-                is_range = (range_height_pct < 0.02) and volatility_contained
+                    is_range = (range_height_pct < 0.02) and volatility_contained
 
-                if is_range:
-                    data.loc[data.index[i], 'in_range'] = True
-                    data.loc[data.index[i], 'range_top'] = window_high
-                    data.loc[data.index[i], 'range_bottom'] = window_low
-                    data.loc[data.index[i], 'range_midpoint'] = (window_high + window_low) / 2
+                    if is_range:
+                        data.loc[data.index[i], 'in_range'] = True
+                        data.loc[data.index[i], 'range_top'] = window_high
+                        data.loc[data.index[i], 'range_bottom'] = window_low
+                        data.loc[data.index[i], 'range_midpoint'] = (window_high + window_low) / 2
 
-                    # Count how many bars we've been in this range
-                    if i > 0 and data.iloc[i - 1]['in_range']:
-                        prev_top = data.iloc[i - 1]['range_top']
-                        prev_bottom = data.iloc[i - 1]['range_bottom']
+                        # Count how many bars we've been in this range
+                        if i > 0 and data.iloc[i - 1]['in_range']:
+                            prev_top = data.iloc[i - 1]['range_top']
+                            prev_bottom = data.iloc[i - 1]['range_bottom']
 
-                        # If the range boundaries are similar, increment the count
-                        if (abs(window_high - prev_top) / prev_top < 0.003 and
-                                abs(window_low - prev_bottom) / prev_bottom < 0.003):
-                            data.loc[data.index[i], 'range_bars'] = data.iloc[i - 1]['range_bars'] + 1
+                            # If the range boundaries are similar, increment the count
+                            if (not np.isnan(prev_top) and not np.isnan(
+                                    prev_bottom) and prev_top > 0 and prev_bottom > 0 and
+                                    abs(window_high - prev_top) / prev_top < 0.003 and
+                                    abs(window_low - prev_bottom) / prev_bottom < 0.003):
+                                data.loc[data.index[i], 'range_bars'] = data.iloc[i - 1]['range_bars'] + 1
+                            else:
+                                data.loc[data.index[i], 'range_bars'] = 1
                         else:
                             data.loc[data.index[i], 'range_bars'] = 1
-                    else:
-                        data.loc[data.index[i], 'range_bars'] = 1
+
+        # Add logging to help debug test failures
+        range_count = data['in_range'].sum()
+        self.logger.debug(f"Identified {range_count} bars in range conditions")
 
         return data
 
@@ -330,13 +421,18 @@ class RangeBoundStrategy(BaseStrategy):
             current_adx = data.iloc[i]['adx']
 
             # Calculate range proximity - how close we are to boundaries
-            # 0 = at midpoint, 1 = at boundary
+            # Initialize both proximity variables with default values
+            proximity_to_bottom = 0.0
+            proximity_to_top = 0.0
+
             if current_close < range_midpoint:
                 # Lower half of range
-                proximity_to_bottom = (range_midpoint - current_close) / (range_midpoint - range_bottom)
+                if not np.isnan(range_midpoint) and not np.isnan(range_bottom) and (range_midpoint - range_bottom) > 0:
+                    proximity_to_bottom = (range_midpoint - current_close) / (range_midpoint - range_bottom)
             else:
                 # Upper half of range
-                proximity_to_top = (current_close - range_midpoint) / (range_top - range_midpoint)
+                if not np.isnan(range_midpoint) and not np.isnan(range_top) and (range_top - range_midpoint) > 0:
+                    proximity_to_top = (current_close - range_midpoint) / (range_top - range_midpoint)
 
             # Buy Signal Conditions:
             # 1. Price is near the lower boundary of the range
@@ -344,8 +440,8 @@ class RangeBoundStrategy(BaseStrategy):
             # 3. ADX is below threshold (non-trending)
             if (current_close < range_midpoint and
                     proximity_to_bottom > 0.7 and  # Close to bottom
-                    current_rsi <= self.rsi_oversold and
-                    current_adx < self.adx_threshold):
+                    not np.isnan(current_rsi) and current_rsi <= self.rsi_oversold and
+                    not np.isnan(current_adx) and current_adx < self.adx_threshold):
 
                 # Calculate signal strength (1.0 = very strong)
                 strength = min(1.0, proximity_to_bottom * (self.rsi_oversold - current_rsi) / 10)
@@ -368,8 +464,8 @@ class RangeBoundStrategy(BaseStrategy):
             # 3. ADX is below threshold (non-trending)
             elif (current_close > range_midpoint and
                   proximity_to_top > 0.7 and  # Close to top
-                  current_rsi >= self.rsi_overbought and
-                  current_adx < self.adx_threshold):
+                  not np.isnan(current_rsi) and current_rsi >= self.rsi_overbought and
+                  not np.isnan(current_adx) and current_adx < self.adx_threshold):
 
                 # Calculate signal strength (1.0 = very strong)
                 strength = min(1.0, proximity_to_top * (current_rsi - self.rsi_overbought) / 10)

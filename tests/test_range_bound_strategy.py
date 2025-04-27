@@ -1,4 +1,4 @@
-# tests/test_range_bound_strategy.py
+# tests/test_range_bound_strategy.py (updated)
 import json
 import unittest
 import pandas as pd
@@ -53,8 +53,7 @@ class TestRangeBoundStrategy(unittest.TestCase):
             # rsi_overbought <= rsi_oversold should raise ValueError
             RangeBoundStrategy(rsi_overbought=50, rsi_oversold=50)
 
-    @patch('strategies.range_bound.RangeBoundStrategy.calculate_indicators')
-    def test_calculate_indicators(self, mock_calculate):
+    def test_calculate_indicators(self):
         """Test indicator calculation."""
         # Create sample data (100 candles)
         dates = [datetime.now() - timedelta(minutes=15 * i) for i in range(100, 0, -1)]
@@ -66,30 +65,7 @@ class TestRangeBoundStrategy(unittest.TestCase):
             'volume': np.random.normal(1000, 100, 100)
         }, index=dates)
 
-        # Create a mock result with all required columns
-        result_data = data.copy()
-        result_data['rsi'] = np.random.uniform(30, 70, 100)
-        result_data['adx'] = 15
-        result_data['plus_di'] = 20
-        result_data['minus_di'] = 10
-        result_data['sma20'] = 1800
-        result_data['upper_band'] = 1820
-        result_data['lower_band'] = 1780
-        result_data['bb_width'] = 0.02
-        result_data['in_range'] = True
-        result_data['range_top'] = 1810
-        result_data['range_bottom'] = 1790
-        result_data['range_midpoint'] = 1800
-        result_data['range_bars'] = 20
-        result_data['signal'] = 0
-        result_data['signal_strength'] = 0
-        result_data['stop_loss'] = 1785
-        result_data['take_profit'] = 1815
-
-        # Configure the mock
-        mock_calculate.return_value = result_data
-
-        # Call the method
+        # Calculate indicators
         result = self.strategy.calculate_indicators(data)
 
         # Check that expected columns were added
@@ -97,11 +73,16 @@ class TestRangeBoundStrategy(unittest.TestCase):
         self.assertIn('adx', result.columns)
         self.assertIn('plus_di', result.columns)
         self.assertIn('minus_di', result.columns)
+        self.assertIn('middle_band', result.columns)
+        self.assertIn('upper_band', result.columns)
+        self.assertIn('lower_band', result.columns)
+        self.assertIn('bb_width', result.columns)
         self.assertIn('in_range', result.columns)
         self.assertIn('range_top', result.columns)
         self.assertIn('range_bottom', result.columns)
         self.assertIn('range_midpoint', result.columns)
         self.assertIn('signal', result.columns)
+        self.assertIn('signal_strength', result.columns)
         self.assertIn('stop_loss', result.columns)
         self.assertIn('take_profit', result.columns)
 
@@ -149,6 +130,47 @@ class TestRangeBoundStrategy(unittest.TestCase):
 
         return data
 
+    def test_range_identification(self):
+        """Test that the strategy correctly identifies ranges."""
+        # Create data with appropriate structure for range identification
+        data = self.create_range_data_with_signals()
+
+        # We need to ensure all required columns exist
+        data['tr'] = np.ones(len(data))  # Add true range column
+
+        # Add some pre-calculated indicators to focus on range identification
+        # Make sure ADX is below the threshold for all data points
+        data['adx'] = np.ones(len(data)) * (self.strategy.adx_threshold - 5)  # Low ADX (non-trending)
+        data['bb_width'] = np.ones(len(data)) * 0.01  # Narrow Bollinger Bands
+
+        # Set past bb_width to be slightly higher to show narrowing
+        for i in range(0, len(data) - 10):
+            data.loc[data.index[i], 'bb_width'] = 0.015
+
+        # Make sure the range boundaries are clear
+        range_low = 1790
+        range_high = 1810
+
+        # Make sure there's enough data for the lookback
+        min_idx = max(30, self.strategy.lookback_periods + 5)
+
+        # Run the range identification method - with enough data before
+        result_data = self.strategy._identify_ranges(data)
+
+        # Check that at least one range was identified in the range section
+        range_identified = False
+        for i in range(min_idx, 80):  # Check in the expected range section
+            if i < len(result_data) and result_data.iloc[i]['in_range']:
+                range_identified = True
+                # When a range is identified, verify its properties
+                self.assertFalse(np.isnan(result_data.iloc[i]['range_top']), "range_top should not be NaN")
+                self.assertFalse(np.isnan(result_data.iloc[i]['range_bottom']), "range_bottom should not be NaN")
+                self.assertFalse(np.isnan(result_data.iloc[i]['range_midpoint']), "range_midpoint should not be NaN")
+                self.assertTrue(result_data.iloc[i]['range_bars'] > 0, "range_bars should be positive")
+                break
+
+        self.assertTrue(range_identified, "No range was identified when one should have been")
+
     def test_buy_signal_generation(self):
         """Test the generation of a buy signal at range support."""
         # Create data with a range and price at support
@@ -167,6 +189,9 @@ class TestRangeBoundStrategy(unittest.TestCase):
             result_data['adx'] = 15  # Non-trending
 
             # Set up a buy signal on the last candle
+            # tests/test_range_bound_strategy.py (continued)
+
+            # Set up a buy signal on the last candle
             last_idx = len(result_data) - 1
             result_data.loc[result_data.index[last_idx], 'signal'] = 1  # Buy signal
             result_data.loc[result_data.index[last_idx], 'signal_strength'] = 0.8
@@ -182,6 +207,7 @@ class TestRangeBoundStrategy(unittest.TestCase):
             mock_signal.price = result_data['close'].iloc[-1]
             mock_signal.strength = 0.8
             mock_signal.signal_data = '{"stop_loss": 1785, "take_profit_midpoint": 1800, "take_profit_full": 1809.73, "range_top": 1810, "range_bottom": 1790, "rsi": 30, "adx": 15, "reason": "Buy at support in range with oversold RSI"}'
+
             # Patch the create_signal method
             with patch.object(self.strategy, 'create_signal', return_value=mock_signal):
                 # Call analyze
@@ -286,6 +312,75 @@ class TestRangeBoundStrategy(unittest.TestCase):
         signals = self.strategy.analyze(data)
         self.assertEqual(len(signals), 0)
 
+    def test_adx_calculation(self):
+        """Test ADX calculation functionality."""
+        # Create test data
+        dates = [datetime.now() - timedelta(minutes=15 * i) for i in range(50, 0, -1)]
+        data = pd.DataFrame({
+            'open': np.random.normal(1800, 10, 50),
+            'high': np.random.normal(1810, 10, 50),
+            'low': np.random.normal(1790, 10, 50),
+            'close': np.random.normal(1800, 10, 50),
+            'volume': np.random.normal(1000, 100, 50)
+        }, index=dates)
 
-if __name__ == '__main__':
-    unittest.main()
+        # Apply ADX calculation
+        result = self.strategy._calculate_adx(data)
+
+        # Check that the function adds the required columns
+        self.assertIn('adx', result.columns)
+        self.assertIn('plus_di', result.columns)
+        self.assertIn('minus_di', result.columns)
+        self.assertIn('tr', result.columns)
+
+        # Check that ADX values are in the expected range (0-100)
+        adx_values = result['adx'].dropna()
+        self.assertTrue(all(0 <= x <= 100 for x in adx_values), "ADX values should be between 0 and 100")
+
+        # Check that directional indexes are in the expected range
+        plus_di_values = result['plus_di'].dropna()
+        minus_di_values = result['minus_di'].dropna()
+        self.assertTrue(all(0 <= x <= 100 for x in plus_di_values), "+DI values should be between 0 and 100")
+        self.assertTrue(all(0 <= x <= 100 for x in minus_di_values), "-DI values should be between 0 and 100")
+
+    def test_integration_of_methods(self):
+        """Test integration of all component methods."""
+        # Create dataset
+        data = self.create_range_data_with_signals()
+
+        # Use actual methods instead of mocks for this test
+        # (but still patch create_signal to avoid creating real signals)
+        mock_signal = MagicMock()
+
+        with patch.object(self.strategy, 'create_signal', return_value=mock_signal):
+            # Run the full calculate_indicators method
+            processed_data = self.strategy.calculate_indicators(data)
+
+            # Verify each intermediate step added its data
+            # 1. Check for RSI values
+            self.assertIn('rsi', processed_data.columns)
+            self.assertTrue(len(processed_data['rsi'].dropna()) > 0)
+
+            # 2. Check for ADX values
+            self.assertIn('adx', processed_data.columns)
+            self.assertTrue(len(processed_data['adx'].dropna()) > 0)
+
+            # 3. Check for range identification
+            self.assertIn('in_range', processed_data.columns)
+            # At least some bars should be identified as range
+            self.assertTrue(processed_data['in_range'].sum() > 0)
+
+            # 4. Check for signal assignment
+            self.assertIn('signal', processed_data.columns)
+            # Signal columns should exist even if no signals triggered
+            # (we don't know if our synthetic data will trigger a signal)
+
+            # Call analyze and verify it runs without errors
+            try:
+                signals = self.strategy.analyze(data)
+                self.assertIsInstance(signals, list)
+            except Exception as e:
+                self.fail(f"analyze() raised an exception: {e}")
+
+    if __name__ == '__main__':
+        unittest.main()
