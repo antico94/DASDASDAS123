@@ -348,6 +348,47 @@ class TestBreakoutStrategy(unittest.TestCase):
                 self.assertEqual(len(signals), 1)
                 mock_create_signal.assert_called_once()
 
+    def test_breakout_detection_with_extreme_volume(self):
+        """Test breakout detection with extreme volume conditions."""
+        # Create data with extremely high volume spike
+        data = self.create_range_and_breakout_data()
+
+        # Process through calculate_indicators first to get base data structure
+        processed_data = self.strategy.calculate_indicators(data.copy())
+
+        # Manually set extreme volume at index 84 (breakout bar)
+        processed_data.loc[processed_data.index[84], 'volume'] = processed_data.loc[
+                                                                     processed_data.index[83], 'volume_ma'] * 10
+
+        # Run _identify_breakouts with this extreme data
+        result = self.strategy._identify_breakouts(processed_data)
+
+        # Check for breakout signal with high strength due to volume
+        self.assertEqual(result.loc[result.index[84], 'breakout_signal'], 1)
+        self.assertGreater(result.loc[result.index[84], 'breakout_strength'], 0.7)
+
+    def test_range_detection_with_tight_consolidation(self):
+        """Test range detection with very tight price consolidation."""
+        # Create data with very tight range (should be easily identified)
+        data = pd.DataFrame({
+            'open': np.random.normal(1800, 1, 100),  # Very tight range
+            'high': np.random.normal(1802, 1, 100),
+            'low': np.random.normal(1798, 1, 100),
+            'close': np.random.normal(1800, 1, 100),
+            'volume': np.random.normal(1000, 50, 100)
+        })
+
+        # Add required indicator columns
+        data['bb_width'] = 0.005  # Very narrow
+        data['atr'] = 1.0
+
+        # Run range identification
+        result = self.strategy._identify_ranges(data)
+
+        # Should identify ranges due to tight consolidation
+        range_bars = result['in_range'].sum()
+        self.assertGreater(range_bars, 50)  # At least half should be identified as range
+
 
 if __name__ == '__main__':
     unittest.main()

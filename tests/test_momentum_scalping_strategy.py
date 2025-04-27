@@ -306,19 +306,140 @@ class TestMomentumScalpingStrategy(unittest.TestCase):
     def test_analyze_with_invalid_data(self):
         """Test the analyze method with invalid data inputs."""
         # Case 1: None input
-        signals = self.strategy.analyze(None)
-        self.assertEqual(len(signals), 0)
+        with patch.object(self.strategy, 'calculate_indicators') as mock_calc:
+            signals = self.strategy.analyze(None)
+            self.assertEqual(len(signals), 0)
+            mock_calc.assert_not_called()
 
         # Case 2: Empty DataFrame
-        signals = self.strategy.analyze(pd.DataFrame())
-        self.assertEqual(len(signals), 0)
+        with patch.object(self.strategy, 'calculate_indicators') as mock_calc:
+            signals = self.strategy.analyze(pd.DataFrame())
+            self.assertEqual(len(signals), 0)
+            mock_calc.assert_not_called()
 
         # Case 3: DataFrame without required columns
-        bad_data = pd.DataFrame({
-            'some_column': [1, 2, 3]
+        with patch.object(self.strategy, 'calculate_indicators') as mock_calc:
+            mock_calc.return_value = pd.DataFrame({'some_column': [1, 2, 3]})
+            bad_data = pd.DataFrame({'some_column': [1, 2, 3]})
+            signals = self.strategy.analyze(bad_data)
+            self.assertEqual(len(signals), 0)
+
+    def test_calculate_indicators_with_insufficient_data(self):
+        """Test calculate_indicators method with insufficient data."""
+        # Create a dataset that's smaller than min_required_candles
+        small_data = pd.DataFrame({
+            'open': np.random.normal(1800, 10, 10),
+            'high': np.random.normal(1810, 10, 10),
+            'low': np.random.normal(1790, 10, 10),
+            'close': np.random.normal(1800, 10, 10),
+            'volume': np.random.normal(1000, 100, 10)
         })
-        signals = self.strategy.analyze(bad_data)
-        self.assertEqual(len(signals), 0)
+
+        # Call the method
+        result = self.strategy.calculate_indicators(small_data)
+
+        # Should return original data with warning
+        self.assertEqual(len(result), len(small_data))
+        self.assertFalse('ema' in result.columns)
+        self.assertFalse('macd' in result.columns)
+
+    def test_signal_combinations(self):
+        """Test different signal criteria combinations."""
+        # Create base dataset
+        data = pd.DataFrame({
+            'open': np.random.normal(1800, 5, 100),
+            'high': np.random.normal(1810, 5, 100),
+            'low': np.random.normal(1790, 5, 100),
+            'close': np.random.normal(1800, 5, 100),
+            'volume': np.random.normal(1000, 50, 100),
+            'ema': np.random.normal(1800, 5, 100),
+            'macd': np.zeros(100),
+            'macd_signal': np.zeros(100),
+            'macd_histogram': np.zeros(100),
+            'atr': np.ones(100) * 5,
+            'prior_trend': np.zeros(100),
+            'signal': np.zeros(100),
+            'signal_strength': np.zeros(100),
+            'stop_loss': np.full(100, np.nan),
+            'take_profit': np.full(100, np.nan),
+        })
+
+        # Set up different scenarios for signal generation
+
+        # Scenario 1: Bullish setup (price below EMA, then crosses above with positive MACD)
+        # Prior candles setup
+        for i in range(90, 95):
+            data.loc[i, 'close'] = 1795  # below EMA
+            data.loc[i, 'ema'] = 1800
+            data.loc[i, 'macd_histogram'] = -0.05
+            data.loc[i, 'prior_trend'] = -1
+
+        # Crossover candle
+        data.loc[95, 'close'] = 1805  # above EMA
+        data.loc[95, 'ema'] = 1800
+        data.loc[95, 'macd_histogram'] = 0.05  # positive
+        data.loc[95, 'prior_trend'] = -1
+
+        # Scenario 2: Bearish setup (price above EMA, then crosses below with negative MACD)
+        # Prior candles setup
+        for i in range(80, 85):
+            data.loc[i, 'close'] = 1805  # above EMA
+            data.loc[i, 'ema'] = 1800
+            data.loc[i, 'macd_histogram'] = 0.05
+            data.loc[i, 'prior_trend'] = 1
+
+        # Crossover candle
+        data.loc[85, 'close'] = 1795  # below EMA
+        data.loc[85, 'ema'] = 1800
+        data.loc[85, 'macd_histogram'] = -0.05  # negative
+        data.loc[85, 'prior_trend'] = 1
+
+        # Run the signal identification
+        result = self.strategy._identify_signals(data)
+
+        # Verify both the buy and sell signals were generated
+        self.assertEqual(result.loc[95, 'signal'], 1)  # Buy signal
+        self.assertFalse(np.isnan(result.loc[95, 'stop_loss']))
+        self.assertFalse(np.isnan(result.loc[95, 'take_profit']))
+
+        self.assertEqual(result.loc[85, 'signal'], -1)  # Sell signal
+        self.assertFalse(np.isnan(result.loc[85, 'stop_loss']))
+        self.assertFalse(np.isnan(result.loc[85, 'take_profit']))
+
+    def test_handling_nan_values_in_signals(self):
+        """Test handling of NaN values in signal generation logic."""
+        # Create dataset with NaN values in key fields
+        data = pd.DataFrame({
+            'open': np.random.normal(1800, 5, 100),
+            'high': np.random.normal(1810, 5, 100),
+            'low': np.random.normal(1790, 5, 100),
+            'close': np.random.normal(1800, 5, 100),
+            'volume': np.random.normal(1000, 50, 100),
+            'ema': np.random.normal(1800, 5, 100),
+            'macd': np.zeros(100),
+            'macd_signal': np.zeros(100),
+            'macd_histogram': np.zeros(100),
+            'atr': np.ones(100) * 5,
+            'prior_trend': np.zeros(100),
+            'signal': np.zeros(100),
+            'signal_strength': np.zeros(100),
+            'stop_loss': np.full(100, np.nan),
+            'take_profit': np.full(100, np.nan),
+        })
+
+        # Insert NaN values
+        data.loc[50, 'ema'] = np.nan
+        data.loc[51, 'macd_histogram'] = np.nan
+        data.loc[52, 'close'] = np.nan
+        data.loc[53, 'prior_trend'] = np.nan
+        data.loc[54, 'atr'] = np.nan
+
+        # Run through signal identification
+        result = self.strategy._identify_signals(data)
+
+        # Verify method handles NaN values without errors
+        self.assertEqual(len(result), len(data))
+        self.assertIn('signal', result.columns)
 
 
 if __name__ == '__main__':

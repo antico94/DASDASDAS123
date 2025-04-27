@@ -206,8 +206,17 @@ class MomentumScalpingStrategy(BaseStrategy):
         Returns:
             list: Generated trading signals
         """
+        # Check if data is None or empty
+        if data is None or not isinstance(data, pd.DataFrame) or data.empty:
+            self.logger.warning("No data provided for momentum scalping analysis")
+            return []
+
         # Calculate indicators
-        data = self.calculate_indicators(data)
+        try:
+            data = self.calculate_indicators(data)
+        except Exception as e:
+            self.logger.error(f"Error calculating indicators: {str(e)}")
+            return []
 
         # Check if we have sufficient data after calculations
         if data.empty or 'signal' not in data.columns:

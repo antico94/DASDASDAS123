@@ -372,6 +372,93 @@ class TestIchimokuStrategy(unittest.TestCase):
         # Should return empty list due to insufficient data
         self.assertEqual(len(signals), 0)
 
+    def test_tenkan_kijun_calculation(self):
+        """Test calculation of Tenkan-sen and Kijun-sen."""
+        # Create data with known min/max values
+        data = pd.DataFrame({
+            'high': [1800, 1810, 1820, 1830, 1820, 1810, 1800, 1810, 1820] * 10,
+            'low': [1780, 1790, 1800, 1810, 1800, 1790, 1780, 1790, 1800] * 10,
+            'close': [1790, 1800, 1810, 1820, 1810, 1800, 1790, 1800, 1810] * 10,
+            'open': [1790, 1800, 1810, 1800, 1810, 1800, 1790, 1800, 1790] * 10
+        })
+
+        # Calculate indicators
+        result = self.strategy.calculate_indicators(data)
+
+        # Verify Tenkan and Kijun exist
+        self.assertIn('tenkan_sen', result.columns)
+        self.assertIn('kijun_sen', result.columns)
+
+        # Check a specific value (9-period Tenkan-sen calculation)
+        # For the first 9 bars, high_max = 1830, low_min = 1780
+        # So Tenkan-sen = (1830 + 1780) / 2 = 1805
+        tenkan_after_warmup = result['tenkan_sen'].iloc[9]
+        self.assertAlmostEqual(tenkan_after_warmup, 1805, delta=0.5)
+
+        # Kijun period is longer (26), so won't check exact value
+
+    def test_cloud_calculation(self):
+        """Test Senkou Span calculation (cloud formation)."""
+        # Create enough data for cloud calculation
+        n_periods = 100  # Need enough for cloud calculation
+        data = pd.DataFrame({
+            'high': [1810] * n_periods,
+            'low': [1790] * n_periods,
+            'close': [1800] * n_periods,
+            'open': [1800] * n_periods
+        })
+
+        # In first half, make a clear uptrend
+        for i in range(30):
+            data.loc[i, 'high'] = 1810 + i
+            data.loc[i, 'low'] = 1790 + i
+            data.loc[i, 'close'] = 1800 + i
+
+        # Calculate indicators
+        result = self.strategy.calculate_indicators(data)
+
+        # Verify cloud components exist
+        self.assertIn('senkou_span_a', result.columns)
+        self.assertIn('senkou_span_b', result.columns)
+        self.assertIn('cloud_bullish', result.columns)
+
+        # Check if cloud is bullish where it should be
+        # After uptrend plus displacement period, cloud should be bullish
+        cloud_bullish_during_uptrend = result['cloud_bullish'].iloc[60]
+        self.assertTrue(cloud_bullish_during_uptrend)
+
+    def test_signal_detection_tk_cross(self):
+        """Test identification of TK crosses."""
+        # Create data with a TK cross setup
+        data = pd.DataFrame({
+            'high': [1800] * 200,
+            'low': [1780] * 200,
+            'close': [1790] * 200,
+            'open': [1790] * 200
+        })
+
+        # Set up tenkan/kijun cross around index 150
+        result = self.strategy.calculate_indicators(data)
+
+        # Manually create a bullish TK cross
+        result.loc[149, 'tenkan_sen'] = 1795
+        result.loc[149, 'kijun_sen'] = 1800
+        result.loc[150, 'tenkan_sen'] = 1805
+        result.loc[150, 'kijun_sen'] = 1800
+
+        # Set up cloud and price conditions for a valid signal
+        for i in range(145, 155):
+            result.loc[i, 'close'] = 1820  # Price above cloud
+            result.loc[i, 'senkou_span_a'] = 1790
+            result.loc[i, 'senkou_span_b'] = 1780
+            result.loc[i, 'cloud_bullish'] = True
+
+        # Recalculate signals with our manipulated data
+        result = self.strategy._identify_signals(result)
+
+        # Verify signal identification
+        self.assertEqual(result.loc[150, 'signal'], 1)  # Should detect buy signal at the cross
+
 
 if __name__ == '__main__':
     unittest.main()

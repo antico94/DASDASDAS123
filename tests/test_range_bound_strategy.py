@@ -617,8 +617,93 @@ class TestRangeBoundStrategy(unittest.TestCase):
             self.assertIsInstance(metadata["numpy_float"], float)
             self.assertIsInstance(metadata["numpy_bool"], bool)
 
-    if __name__ == '__main__':
-        unittest.main()
+    def test_rsi_calculation(self):
+        """Test RSI calculation in the strategy."""
+        # Create test data with a clear up/down pattern
+        data = pd.DataFrame({
+            'close': [1800, 1810, 1820, 1815, 1825, 1835, 1825, 1815, 1805, 1795,
+                      1785, 1775, 1785, 1795, 1805]
+        })
+
+        # Add other required columns
+        data['open'] = data['close'] - 5
+        data['high'] = data['close'] + 5
+        data['low'] = data['close'] - 5
+        data['volume'] = 1000
+
+        # Create a copy to pass to calculate_indicators
+        full_data = data.copy()
+
+        # Process RSI calculation
+        result = self.strategy.calculate_indicators(full_data)
+
+        # Verify RSI column exists
+        self.assertIn('rsi', result.columns)
+
+        # Find where we have valid RSI values (after RSI period)
+        valid_rsi = result['rsi'].dropna()
+
+        # There should be at least some values after the warmup period
+        self.assertTrue(len(valid_rsi) > 0)
+
+        # Verify RSI values are in the correct range (0-100)
+        self.assertTrue((valid_rsi >= 0).all() and (valid_rsi <= 100).all())
+
+    def test_bollinger_band_calculation(self):
+        """Test Bollinger Band calculation."""
+        # Create test data with a trend followed by a consolidation
+        closes = [1800 + i for i in range(30)] + [1830] * 20
+        data = pd.DataFrame({
+            'close': closes,
+            'open': [c - 5 for c in closes],
+            'high': [c + 5 for c in closes],
+            'low': [c - 5 for c in closes],
+            'volume': [1000] * len(closes)
+        })
+
+        # Process through calculate_indicators
+        result = self.strategy.calculate_indicators(data)
+
+        # Verify BB columns exist
+        self.assertIn('middle_band', result.columns)
+        self.assertIn('upper_band', result.columns)
+        self.assertIn('lower_band', result.columns)
+        self.assertIn('bb_width', result.columns)
+
+        # Check BB calculations after warmup period (20 bars for BB)
+        bb_data = result.iloc[20:]
+
+        # Middle band should be close to price in the consolidation zone
+        consolidation_middle = bb_data['middle_band'].iloc[-5]
+        self.assertAlmostEqual(consolidation_middle, 1830, delta=5)
+
+        # BB width should narrow during consolidation
+        trending_width = bb_data['bb_width'].iloc[5]  # During trend
+        consolidation_width = bb_data['bb_width'].iloc[-5]  # During consolidation
+        self.assertTrue(consolidation_width < trending_width)
+
+    def test_analyze_with_missing_columns(self):
+        """Test analyze method with data missing required columns."""
+        # Create data without required columns
+        data = pd.DataFrame({
+            'open': np.random.normal(1800, 10, 100),
+            'high': np.random.normal(1810, 10, 100),
+            'low': np.random.normal(1790, 10, 100),
+            'close': np.random.normal(1800, 10, 100),
+            'volume': np.random.normal(1000, 100, 100)
+        })
+
+        # Mock calculate_indicators to return data without signal column
+        with patch.object(self.strategy, 'calculate_indicators') as mock_calc:
+            missing_columns_data = data.copy()
+            # Deliberately don't add 'signal' column
+            mock_calc.return_value = missing_columns_data
+
+            # Call analyze
+            signals = self.strategy.analyze(data)
+
+            # Should return empty list due to missing columns
+            self.assertEqual(len(signals), 0)
 
     if __name__ == '__main__':
         unittest.main()

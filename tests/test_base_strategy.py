@@ -234,6 +234,26 @@ class TestBaseStrategy(unittest.TestCase):
         self.assertIsInstance(metadata["numpy_float"], float)
         self.assertIsInstance(metadata["numpy_bool"], bool)
 
+    def test_create_signal_with_none_metadata(self):
+        """Test create_signal method with None metadata."""
+        # Call create_signal with None metadata
+        signal = self.strategy.create_signal(
+            signal_type="BUY",
+            price=1820.5,
+            strength=0.75,
+            metadata=None
+        )
+
+        # Verify signal is created correctly
+        self.assertEqual(signal.signal_type, "BUY")
+        self.assertEqual(signal.price, 1820.5)
+        self.assertEqual(signal.strength, 0.75)
+
+        # Verify metadata handling
+        import json
+        metadata = json.loads(signal.signal_data)
+        self.assertEqual(metadata, {})  # Should be empty dict, not None
+
 
 if __name__ == '__main__':
     unittest.main()
