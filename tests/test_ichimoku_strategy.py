@@ -539,7 +539,7 @@ class TestIchimokuStrategy(unittest.TestCase):
     def test_cloud_identification(self):
         """Test identification of cloud characteristics."""
         # Create sample data with bullish and bearish clouds
-        dates = pd.date_range(start='2023-01-01', periods=200, freq='H')
+        dates = pd.date_range(start='2023-01-01', periods=200, freq='h')
         data = pd.DataFrame({
             'open': np.random.normal(1800, 10, 200),
             'high': np.random.normal(1810, 10, 200),
@@ -579,7 +579,7 @@ class TestIchimokuStrategy(unittest.TestCase):
     def test_tk_cross_signal_generation(self):
         """Test generation of TK cross signals."""
         # Create sample data
-        dates = pd.date_range(start='2023-01-01', periods=200, freq='H')
+        dates = pd.date_range(start='2023-01-01', periods=200, freq='h')
         data = pd.DataFrame({
             'open': np.random.normal(1800, 10, 200),
             'high': np.random.normal(1810, 10, 200),
@@ -635,7 +635,7 @@ class TestIchimokuStrategy(unittest.TestCase):
     def test_stop_loss_calculation(self):
         """Test calculation of stop loss levels."""
         # Create basic dataset
-        dates = pd.date_range(start='2023-01-01', periods=100, freq='H')
+        dates = pd.date_range(start='2023-01-01', periods=100, freq='h')
         data = pd.DataFrame({
             'open': np.random.normal(1800, 10, 100),
             'high': np.random.normal(1810, 10, 100),
@@ -690,7 +690,7 @@ class TestIchimokuStrategy(unittest.TestCase):
     def test_target_calculation(self):
         """Test calculation of take profit targets."""
         # Create dataset
-        dates = pd.date_range(start='2023-01-01', periods=10, freq='H')
+        dates = pd.date_range(start='2023-01-01', periods=10, freq='h')
         data = pd.DataFrame({
             'open': np.random.normal(1800, 5, 10),
             'high': np.random.normal(1810, 5, 10),
@@ -754,7 +754,7 @@ class TestIchimokuStrategy(unittest.TestCase):
     def test_no_signal_conditions(self):
         """Test that no signals are generated when conditions aren't met."""
         # Create dataset with Ichimoku components but no signal conditions
-        dates = pd.date_range(start='2023-01-01', periods=100, freq='H')
+        dates = pd.date_range(start='2023-01-01', periods=100, freq='h')
         data = pd.DataFrame({
             'open': np.random.normal(1800, 10, 100),
             'high': np.random.normal(1810, 10, 100),
