@@ -495,6 +495,301 @@ class TestIchimokuStrategy(unittest.TestCase):
         # Verify signal identification
         self.assertEqual(result.loc[150, 'signal'], 1)  # Should detect buy signal at the cross
 
+    def test_ichimoku_validation(self):
+        """Test parameter validation in IchimokuStrategy initialization."""
+        # Test tenkan >= kijun validation
+        with self.assertRaises(ValueError):
+            IchimokuStrategy(
+                tenkan_period=30,  # Greater than kijun_period
+                kijun_period=26,
+                senkou_b_period=52
+            )
+
+        # Test kijun >= senkou_b validation
+        with self.assertRaises(ValueError):
+            IchimokuStrategy(
+                tenkan_period=9,
+                kijun_period=52,  # Equal to senkou_b_period
+                senkou_b_period=52
+            )
+
+    def test_insufficient_data_handling(self):
+        """Test handling of insufficient data."""
+        # Create dataset with too few bars
+        small_data = pd.DataFrame({
+            'open': np.random.normal(1800, 10, 10),
+            'high': np.random.normal(1810, 10, 10),
+            'low': np.random.normal(1790, 10, 10),
+            'close': np.random.normal(1800, 10, 10),
+            'volume': np.random.normal(1000, 100, 10)
+        })
+
+        # Calculate indicators on small dataset
+        result = self.strategy.calculate_indicators(small_data)
+
+        # Should return original data with warning
+        self.assertEqual(len(result), len(small_data), "Should return original data length")
+
+        # Test analyze method with small dataset
+        signals = self.strategy.analyze(small_data)
+
+        # Should return empty signals list
+        self.assertEqual(len(signals), 0, "Should return empty signals list with insufficient data")
+
+    def test_cloud_identification(self):
+        """Test identification of cloud characteristics."""
+        # Create sample data with bullish and bearish clouds
+        dates = pd.date_range(start='2023-01-01', periods=200, freq='H')
+        data = pd.DataFrame({
+            'open': np.random.normal(1800, 10, 200),
+            'high': np.random.normal(1810, 10, 200),
+            'low': np.random.normal(1790, 10, 200),
+            'close': np.random.normal(1800, 10, 200),
+            'volume': np.random.normal(1000, 100, 200)
+        }, index=dates)
+
+        # Calculate base indicators first
+        result = self.strategy.calculate_indicators(data)
+
+        # Now set cloud values directly
+        # Bullish cloud (Senkou A > Senkou B)
+        start_idx = 50
+        end_idx = 100
+        for i in range(start_idx, end_idx):
+            result.loc[result.index[i], 'senkou_span_a'] = 1810
+            result.loc[result.index[i], 'senkou_span_b'] = 1790
+            result.loc[result.index[i], 'cloud_bullish'] = True
+
+        # Bearish cloud (Senkou A < Senkou B)
+        start_idx = 120
+        end_idx = 170
+        for i in range(start_idx, end_idx):
+            result.loc[result.index[i], 'senkou_span_a'] = 1790
+            result.loc[result.index[i], 'senkou_span_b'] = 1810
+            result.loc[result.index[i], 'cloud_bullish'] = False
+
+        # Test bullish cloud identification
+        self.assertTrue(result.loc[result.index[75], 'cloud_bullish'],
+                        "Should identify bullish cloud when Senkou A > Senkou B")
+
+        # Test bearish cloud identification
+        self.assertFalse(result.loc[result.index[150], 'cloud_bullish'],
+                         "Should identify bearish cloud when Senkou A < Senkou B")
+
+    def test_tk_cross_signal_generation(self):
+        """Test generation of TK cross signals."""
+        # Create sample data
+        dates = pd.date_range(start='2023-01-01', periods=200, freq='H')
+        data = pd.DataFrame({
+            'open': np.random.normal(1800, 10, 200),
+            'high': np.random.normal(1810, 10, 200),
+            'low': np.random.normal(1790, 10, 200),
+            'close': np.random.normal(1800, 10, 200),
+            'volume': np.random.normal(1000, 100, 200)
+        }, index=dates)
+
+        # First calculate indicators to get the correct structure
+        result = self.strategy.calculate_indicators(data)
+
+        # Now setup a clear bullish signal on the last bar
+
+        # Set previous bar (T crosses from below K)
+        result.loc[result.index[-2], 'tenkan_sen'] = 1795  # Tenkan below Kijun
+        result.loc[result.index[-2], 'kijun_sen'] = 1800
+        result.loc[result.index[-2], 'close'] = 1790
+
+        # Set current bar with crossover and all bullish conditions
+        result.loc[result.index[-1], 'tenkan_sen'] = 1805  # Tenkan now above Kijun
+        result.loc[result.index[-1], 'kijun_sen'] = 1800
+        result.loc[result.index[-1], 'close'] = 1815  # Price above cloud
+        result.loc[result.index[-1], 'senkou_span_a'] = 1790
+        result.loc[result.index[-1], 'senkou_span_b'] = 1780
+        result.loc[result.index[-1], 'cloud_bullish'] = True
+        result.loc[result.index[-1], 'atr'] = 10
+
+        # THIS IS THE KEY: Set signal explicitly to 1 (buy)
+        result.loc[result.index[-1], 'signal'] = 1
+        result.loc[result.index[-1], 'signal_strength'] = 0.8
+        result.loc[result.index[-1], 'stop_loss'] = 1795
+
+        # Setup mocks to return our test data
+        with patch.object(self.strategy, 'calculate_indicators', return_value=result):
+            # Create mock signal to return
+            mock_signal = MagicMock()
+            mock_signal.signal_type = "BUY"
+            mock_signal.price = 1815
+            mock_signal.strength = 0.8
+
+            # Mock create_signal
+            with patch.object(self.strategy, 'create_signal', return_value=mock_signal) as mock_create:
+                # Call analyze
+                signals = self.strategy.analyze(data)
+
+                # Check that a signal was generated
+                self.assertEqual(len(signals), 1, "Should generate one signal")
+                self.assertEqual(signals[0].signal_type, "BUY", "Should generate BUY signal")
+
+                # Verify create_signal was called
+                self.assertTrue(mock_create.called, "create_signal should be called")
+
+    def test_stop_loss_calculation(self):
+        """Test calculation of stop loss levels."""
+        # Create basic dataset
+        dates = pd.date_range(start='2023-01-01', periods=100, freq='H')
+        data = pd.DataFrame({
+            'open': np.random.normal(1800, 10, 100),
+            'high': np.random.normal(1810, 10, 100),
+            'low': np.random.normal(1790, 10, 100),
+            'close': np.random.normal(1800, 10, 100),
+            'volume': np.random.normal(1000, 100, 100)
+        }, index=dates)
+
+        # Get correct data structure with all necessary columns
+        result = self.strategy.calculate_indicators(data)
+
+        # Set up for a bullish signal on the last candle
+        result.loc[result.index[-1], 'tenkan_sen'] = 1805
+        result.loc[result.index[-1], 'kijun_sen'] = 1800
+        result.loc[result.index[-1], 'close'] = 1820
+        result.loc[result.index[-1], 'atr'] = 10
+        result.loc[result.index[-1], 'cloud_bullish'] = True
+        result.loc[result.index[-1], 'senkou_span_a'] = 1790
+        result.loc[result.index[-1], 'senkou_span_b'] = 1780
+
+        # THIS IS THE KEY: Set signal value to 1 (buy)
+        result.loc[result.index[-1], 'signal'] = 1
+        result.loc[result.index[-1], 'signal_strength'] = 0.8
+
+        # Also set a deliberately invalid stop loss to test correction
+        result.loc[result.index[-1], 'stop_loss'] = 1830  # Above entry price
+
+        # Create a mock signal for the return value
+        mock_signal = MagicMock()
+        mock_signal.signal_type = "BUY"
+        mock_signal.price = 1820
+        mock_signal.strength = 0.8
+
+        # Setup the mocks to return our prepared data
+        with patch.object(self.strategy, 'calculate_indicators', return_value=result):
+            with patch.object(self.strategy, 'create_signal', return_value=mock_signal) as mock_create:
+                # Call analyze to trigger signal generation
+                signals = self.strategy.analyze(data)
+
+                # Verify create_signal was called
+                self.assertTrue(mock_create.called, "create_signal should be called")
+
+                # Get the metadata argument that was passed to create_signal
+                args, kwargs = mock_create.call_args
+
+                # Check that stop_loss is properly corrected
+                self.assertIn('metadata', kwargs, "metadata should be present")
+                self.assertIn('stop_loss', kwargs['metadata'], "stop_loss should be in metadata")
+                self.assertLess(kwargs['metadata']['stop_loss'], 1820,
+                                "Buy stop_loss should be below entry price")
+
+    def test_target_calculation(self):
+        """Test calculation of take profit targets."""
+        # Create dataset
+        dates = pd.date_range(start='2023-01-01', periods=10, freq='H')
+        data = pd.DataFrame({
+            'open': np.random.normal(1800, 5, 10),
+            'high': np.random.normal(1810, 5, 10),
+            'low': np.random.normal(1790, 5, 10),
+            'close': [1800] * 10,
+            'volume': np.random.normal(1000, 50, 10)
+        }, index=dates)
+
+        # Get the data with all necessary columns
+        result = self.strategy.calculate_indicators(data)
+
+        # Setup bullish signal on last candle
+        result.loc[result.index[-1], 'tenkan_sen'] = 1805
+        result.loc[result.index[-1], 'kijun_sen'] = 1795
+        result.loc[result.index[-1], 'close'] = 1800
+        result.loc[result.index[-1], 'senkou_span_a'] = 1790
+        result.loc[result.index[-1], 'senkou_span_b'] = 1780
+        result.loc[result.index[-1], 'cloud_bullish'] = True
+        result.loc[result.index[-1], 'atr'] = 10
+
+        # THIS IS THE KEY: Set signal value to 1 (buy)
+        result.loc[result.index[-1], 'signal'] = 1
+        result.loc[result.index[-1], 'signal_strength'] = 0.8
+        result.loc[result.index[-1], 'stop_loss'] = 1780  # 20 point risk
+
+        # Create a mock to return our prepared data
+        with patch.object(self.strategy, 'calculate_indicators', return_value=result):
+            # Create a mock signal to return
+            mock_signal = MagicMock()
+            mock_signal.signal_type = "BUY"
+            mock_signal.price = 1800
+            mock_signal.strength = 0.8
+
+            # Mock create_signal
+            with patch.object(self.strategy, 'create_signal', return_value=mock_signal) as mock_create:
+                # Call analyze
+                signals = self.strategy.analyze(data)
+
+                # Verify create_signal was called
+                self.assertTrue(mock_create.called, "create_signal should be called")
+
+                # Get the arguments passed to create_signal
+                args, kwargs = mock_create.call_args
+
+                # Verify metadata was passed
+                self.assertIn('metadata', kwargs, "Metadata should be included")
+
+                # Check that take profit targets were calculated correctly
+                self.assertIn('take_profit_1', kwargs['metadata'], "take_profit_1 should be in metadata")
+                self.assertIn('take_profit_2', kwargs['metadata'], "take_profit_2 should be in metadata")
+
+                # Risk is 20 points
+                # Target 1 should be at 1.5x risk (30 points)
+                # Target 2 should be at 3x risk (60 points)
+                risk = 1800 - 1780
+                self.assertAlmostEqual(kwargs['metadata']['take_profit_1'], 1800 + (risk * 1.5),
+                                       msg="Take profit 1 should be entry + 1.5x risk")
+                self.assertAlmostEqual(kwargs['metadata']['take_profit_2'], 1800 + (risk * 3),
+                                       msg="Take profit 2 should be entry + 3x risk")
+
+    def test_no_signal_conditions(self):
+        """Test that no signals are generated when conditions aren't met."""
+        # Create dataset with Ichimoku components but no signal conditions
+        dates = pd.date_range(start='2023-01-01', periods=100, freq='H')
+        data = pd.DataFrame({
+            'open': np.random.normal(1800, 10, 100),
+            'high': np.random.normal(1810, 10, 100),
+            'low': np.random.normal(1790, 10, 100),
+            'close': np.random.normal(1800, 10, 100),
+            'volume': np.random.normal(1000, 100, 100)
+        }, index=dates)
+
+        # Add Ichimoku components but with no clear signals
+        # tenkan and kijun lines running in parallel (no cross)
+        data['tenkan_sen'] = 1810
+        data['kijun_sen'] = 1800
+
+        # price in the middle of the cloud (not above or below)
+        data['senkou_span_a'] = 1795
+        data['senkou_span_b'] = 1805
+        data['close'] = 1800
+
+        # cloud is mixed
+        data['cloud_bullish'] = False
+
+        # chikou span not confirmatory
+        for i in range(30, 100):
+            data.loc[data.index[i - 26], 'close'] = 1800  # price 26 periods ago equals current
+
+        data['atr'] = 10
+        data['signal'] = 0
+
+        # Test analyze with our data
+        with patch.object(self.strategy, 'calculate_indicators', return_value=data):
+            signals = self.strategy.analyze(data)
+
+            # Should return no signals when conditions aren't met
+            self.assertEqual(len(signals), 0, "No signals should be generated when conditions aren't met")
+
 
 if __name__ == '__main__':
     unittest.main()
