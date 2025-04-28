@@ -8,7 +8,8 @@ Base = declarative_base()
 
 class OrderRequestLog(Base):
     """Log table for order requests."""
-    __tablename__ = 'logs.order_requests'
+    __tablename__ = 'order_requests' # Changed: Removed 'logs.' prefix
+    __table_args__ = {'schema': 'logs'} # Added: Explicitly specify the schema
 
     id = Column(Integer, primary_key=True)
     time = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
@@ -27,7 +28,8 @@ class OrderRequestLog(Base):
 
 class OrderExecutionLog(Base):
     """Log table for order executions."""
-    __tablename__ = 'logs.order_executions'
+    __tablename__ = 'order_executions' # Changed: Removed 'logs.' prefix
+    __table_args__ = {'schema': 'logs'} # Added: Explicitly specify the schema
 
     id = Column(Integer, primary_key=True)
     time = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
@@ -45,7 +47,8 @@ class OrderExecutionLog(Base):
 
 class PositionLog(Base):
     """Log table for position updates."""
-    __tablename__ = 'logs.positions'
+    __tablename__ = 'positions' # Changed: Removed 'logs.' prefix
+    __table_args__ = {'schema': 'logs'} # Added: Explicitly specify the schema
 
     id = Column(Integer, primary_key=True)
     time = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
@@ -66,7 +69,8 @@ class PositionLog(Base):
 
 class AccountSnapshotLog(Base):
     """Log table for account snapshots."""
-    __tablename__ = 'logs.account_snapshots'
+    __tablename__ = 'account_snapshots' # Changed: Removed 'logs.' prefix
+    __table_args__ = {'schema': 'logs'} # Added: Explicitly specify the schema
 
     id = Column(Integer, primary_key=True)
     time = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
@@ -84,7 +88,8 @@ class AccountSnapshotLog(Base):
 
 class ErrorLog(Base):
     """Log table for errors."""
-    __tablename__ = 'logs.errors'
+    __tablename__ = 'errors' # Changed: Removed 'logs.' prefix
+    __table_args__ = {'schema': 'logs'} # Added: Explicitly specify the schema
 
     id = Column(Integer, primary_key=True)
     time = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
@@ -99,7 +104,8 @@ class ErrorLog(Base):
 
 class EventLog(Base):
     """Log table for general events."""
-    __tablename__ = 'logs.events'
+    __tablename__ = 'events' # Changed: Removed 'logs.' prefix
+    __table_args__ = {'schema': 'logs'} # Added: Explicitly specify the schema
 
     id = Column(Integer, primary_key=True)
     time = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
