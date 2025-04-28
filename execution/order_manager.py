@@ -2,7 +2,7 @@
 import json
 import time
 from datetime import datetime
-from custom_logging.logger import app_logger
+from db_logger.db_logger import DBLogger
 from mt5_connector.connection import MT5Connector
 from data.repository import TradeRepository, StrategySignalRepository
 from data.models import Trade

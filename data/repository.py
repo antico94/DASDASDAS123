@@ -1,7 +1,7 @@
 # data/repository.py
 from datetime import datetime, timedelta
 from sqlalchemy import func, desc
-from custom_logging.logger import app_logger
+from db_logger.db_logger import DBLogger
 from data.db_session import DatabaseSession
 from data.models import OHLCData, StrategySignal, Trade, AccountSnapshot
 
@@ -26,18 +26,21 @@ class BaseRepository:
         Returns:
             The added item with ID populated
         """
-        session = DatabaseSession.get_session()
+        session = None
         try:
+            session = DatabaseSession.get_session()
             session.add(item)
             session.commit()
-            app_logger.debug(f"Added {self.model_class.__name__} to database: {item}")
+            DBLogger.log_event("DEBUG", f"Added {self.model_class.__name__} to database: {item}", "repository")
             return item
         except Exception as e:
-            session.rollback()
-            app_logger.error(f"Error adding {self.model_class.__name__}: {str(e)}")
+            if session:
+                session.rollback()
+            DBLogger.log_error("repository", f"Error adding {self.model_class.__name__}", exception=e)
             raise
         finally:
-            session.close()
+            if session:
+                session.close()
 
     def update(self, item):
         """Update an existing item in the database.
@@ -48,18 +51,21 @@ class BaseRepository:
         Returns:
             The updated item
         """
-        session = DatabaseSession.get_session()
+        session = None
         try:
+            session = DatabaseSession.get_session()
             session.merge(item)
             session.commit()
-            app_logger.debug(f"Updated {self.model_class.__name__} in database: {item}")
+            DBLogger.log_event("DEBUG", f"Updated {self.model_class.__name__} in database: {item}", "repository")
             return item
         except Exception as e:
-            session.rollback()
-            app_logger.error(f"Error updating {self.model_class.__name__}: {str(e)}")
+            if session:
+                session.rollback()
+            DBLogger.log_error("repository", f"Error updating {self.model_class.__name__}", exception=e)
             raise
         finally:
-            session.close()
+            if session:
+                session.close()
 
     def delete(self, item_id):
         """Delete an item from the database by ID.
@@ -70,21 +76,25 @@ class BaseRepository:
         Returns:
             bool: True if deleted, False if not found
         """
-        session = DatabaseSession.get_session()
+        session = None
         try:
+            session = DatabaseSession.get_session()
             item = session.query(self.model_class).filter(self.model_class.id == item_id).first()
             if item:
                 session.delete(item)
                 session.commit()
-                app_logger.debug(f"Deleted {self.model_class.__name__} from database: ID {item_id}")
+                DBLogger.log_event("DEBUG", f"Deleted {self.model_class.__name__} from database: ID {item_id}",
+                                   "repository")
                 return True
             return False
         except Exception as e:
-            session.rollback()
-            app_logger.error(f"Error deleting {self.model_class.__name__}: {str(e)}")
+            if session:
+                session.rollback()
+            DBLogger.log_error("repository", f"Error deleting {self.model_class.__name__}", exception=e)
             raise
         finally:
-            session.close()
+            if session:
+                session.close()
 
     def get_by_id(self, item_id):
         """Get an item by ID.
@@ -95,15 +105,17 @@ class BaseRepository:
         Returns:
             The item or None if not found
         """
-        session = DatabaseSession.get_session()
+        session = None
         try:
+            session = DatabaseSession.get_session()
             item = session.query(self.model_class).filter(self.model_class.id == item_id).first()
             return item
         except Exception as e:
-            app_logger.error(f"Error getting {self.model_class.__name__} by ID: {str(e)}")
+            DBLogger.log_error("repository", f"Error getting {self.model_class.__name__} by ID", exception=e)
             raise
         finally:
-            session.close()
+            if session:
+                session.close()
 
     def get_all(self, limit=None):
         """Get all items.
@@ -114,17 +126,19 @@ class BaseRepository:
         Returns:
             list: All items
         """
-        session = DatabaseSession.get_session()
+        session = None
         try:
+            session = DatabaseSession.get_session()
             query = session.query(self.model_class)
             if limit:
                 query = query.limit(limit)
             return query.all()
         except Exception as e:
-            app_logger.error(f"Error getting all {self.model_class.__name__}s: {str(e)}")
+            DBLogger.log_error("repository", f"Error getting all {self.model_class.__name__}s", exception=e)
             raise
         finally:
-            session.close()
+            if session:
+                session.close()
 
 
 class OHLCDataRepository(BaseRepository):
@@ -142,8 +156,9 @@ class OHLCDataRepository(BaseRepository):
         Returns:
             OHLCData: The added or updated OHLC data
         """
-        session = DatabaseSession.get_session()
+        session = None
         try:
+            session = DatabaseSession.get_session()
             # Check if record already exists
             existing = session.query(OHLCData).filter(
                 OHLCData.symbol == ohlc_data.symbol,
@@ -168,11 +183,13 @@ class OHLCDataRepository(BaseRepository):
                 session.commit()
                 return ohlc_data
         except Exception as e:
-            session.rollback()
-            app_logger.error(f"Error adding or updating OHLC data: {str(e)}")
+            if session:
+                session.rollback()
+            DBLogger.log_error("repository", "Error adding or updating OHLC data", exception=e)
             raise
         finally:
-            session.close()
+            if session:
+                session.close()
 
     def get_latest_candles(self, symbol, timeframe, count=100):
         """Get the latest candles for a symbol and timeframe.
@@ -185,8 +202,9 @@ class OHLCDataRepository(BaseRepository):
         Returns:
             list: The latest candles ordered by timestamp
         """
-        session = DatabaseSession.get_session()
+        session = None
         try:
+            session = DatabaseSession.get_session()
             candles = session.query(OHLCData).filter(
                 OHLCData.symbol == symbol,
                 OHLCData.timeframe == timeframe
@@ -195,10 +213,11 @@ class OHLCDataRepository(BaseRepository):
             # Convert to list and reverse to get chronological order
             return list(reversed(candles))
         except Exception as e:
-            app_logger.error(f"Error getting latest candles: {str(e)}")
+            DBLogger.log_error("repository", "Error getting latest candles", exception=e)
             raise
         finally:
-            session.close()
+            if session:
+                session.close()
 
     def get_candles_range(self, symbol, timeframe, from_date, to_date=None):
         """Get candles for a specific date range.
@@ -215,8 +234,9 @@ class OHLCDataRepository(BaseRepository):
         if to_date is None:
             to_date = datetime.utcnow()
 
-        session = DatabaseSession.get_session()
+        session = None
         try:
+            session = DatabaseSession.get_session()
             candles = session.query(OHLCData).filter(
                 OHLCData.symbol == symbol,
                 OHLCData.timeframe == timeframe,
@@ -226,10 +246,11 @@ class OHLCDataRepository(BaseRepository):
 
             return candles
         except Exception as e:
-            app_logger.error(f"Error getting candles range: {str(e)}")
+            DBLogger.log_error("repository", "Error getting candles range", exception=e)
             raise
         finally:
-            session.close()
+            if session:
+                session.close()
 
 
 class StrategySignalRepository(BaseRepository):
@@ -249,8 +270,9 @@ class StrategySignalRepository(BaseRepository):
         Returns:
             list: Recent signals ordered by timestamp
         """
-        session = DatabaseSession.get_session()
+        session = None
         try:
+            session = DatabaseSession.get_session()
             query = session.query(StrategySignal).order_by(desc(StrategySignal.timestamp))
 
             if strategy_name:
@@ -261,10 +283,11 @@ class StrategySignalRepository(BaseRepository):
 
             return query.limit(limit).all()
         except Exception as e:
-            app_logger.error(f"Error getting recent signals: {str(e)}")
+            DBLogger.log_error("repository", "Error getting recent signals", exception=e)
             raise
         finally:
-            session.close()
+            if session:
+                session.close()
 
     def get_pending_signals(self, symbol=None):
         """Get signals that haven't been executed yet.
@@ -275,8 +298,9 @@ class StrategySignalRepository(BaseRepository):
         Returns:
             list: Pending signals
         """
-        session = DatabaseSession.get_session()
+        session = None
         try:
+            session = DatabaseSession.get_session()
             query = session.query(StrategySignal).filter(
                 StrategySignal.is_executed == False
             ).order_by(StrategySignal.timestamp)
@@ -286,10 +310,11 @@ class StrategySignalRepository(BaseRepository):
 
             return query.all()
         except Exception as e:
-            app_logger.error(f"Error getting pending signals: {str(e)}")
+            DBLogger.log_error("repository", "Error getting pending signals", exception=e)
             raise
         finally:
-            session.close()
+            if session:
+                session.close()
 
     def mark_as_executed(self, signal_id):
         """Mark a signal as executed.
@@ -300,8 +325,9 @@ class StrategySignalRepository(BaseRepository):
         Returns:
             StrategySignal: The updated signal
         """
-        session = DatabaseSession.get_session()
+        session = None
         try:
+            session = DatabaseSession.get_session()
             signal = session.query(StrategySignal).filter(
                 StrategySignal.id == signal_id
             ).first()
@@ -309,15 +335,17 @@ class StrategySignalRepository(BaseRepository):
             if signal:
                 signal.is_executed = True
                 session.commit()
-                app_logger.debug(f"Marked signal {signal_id} as executed")
+                DBLogger.log_event("DEBUG", f"Marked signal {signal_id} as executed", "repository")
                 return signal
             return None
         except Exception as e:
-            session.rollback()
-            app_logger.error(f"Error marking signal as executed: {str(e)}")
+            if session:
+                session.rollback()
+            DBLogger.log_error("repository", "Error marking signal as executed", exception=e)
             raise
         finally:
-            session.close()
+            if session:
+                session.close()
 
 
 class TradeRepository(BaseRepository):
@@ -336,8 +364,9 @@ class TradeRepository(BaseRepository):
         Returns:
             list: Open trades
         """
-        session = DatabaseSession.get_session()
+        session = None
         try:
+            session = DatabaseSession.get_session()
             query = session.query(Trade).filter(Trade.close_time == None)
 
             if strategy_name:
@@ -348,10 +377,11 @@ class TradeRepository(BaseRepository):
 
             return query.all()
         except Exception as e:
-            app_logger.error(f"Error getting open trades: {str(e)}")
+            DBLogger.log_error("repository", "Error getting open trades", exception=e)
             raise
         finally:
-            session.close()
+            if session:
+                session.close()
 
     def get_trades_by_date_range(self, from_date, to_date=None, strategy_name=None):
         """Get trades within a date range.
@@ -367,8 +397,9 @@ class TradeRepository(BaseRepository):
         if to_date is None:
             to_date = datetime.utcnow()
 
-        session = DatabaseSession.get_session()
+        session = None
         try:
+            session = DatabaseSession.get_session()
             query = session.query(Trade).filter(
                 Trade.open_time >= from_date,
                 Trade.open_time <= to_date
@@ -379,10 +410,11 @@ class TradeRepository(BaseRepository):
 
             return query.order_by(Trade.open_time).all()
         except Exception as e:
-            app_logger.error(f"Error getting trades by date range: {str(e)}")
+            DBLogger.log_error("repository", "Error getting trades by date range", exception=e)
             raise
         finally:
-            session.close()
+            if session:
+                session.close()
 
     def get_trades_performance(self, strategy_name=None, from_date=None):
         """Get performance statistics for trades.
@@ -397,8 +429,9 @@ class TradeRepository(BaseRepository):
         if from_date is None:
             from_date = datetime.utcnow() - timedelta(days=30)
 
-        session = DatabaseSession.get_session()
+        session = None
         try:
+            session = DatabaseSession.get_session()
             # Base query for closed trades
             query = session.query(
                 func.count(Trade.id).label('total_trades'),
@@ -442,10 +475,11 @@ class TradeRepository(BaseRepository):
                 'best_trade': result.best_trade or 0
             }
         except Exception as e:
-            app_logger.error(f"Error getting trade performance: {str(e)}")
+            DBLogger.log_error("repository", "Error getting trade performance", exception=e)
             raise
         finally:
-            session.close()
+            if session:
+                session.close()
 
 
 class AccountSnapshotRepository(BaseRepository):
@@ -460,18 +494,19 @@ class AccountSnapshotRepository(BaseRepository):
         Returns:
             AccountSnapshot: The latest snapshot or None if none exists
         """
-        session = DatabaseSession.get_session()
+        session = None
         try:
+            session = DatabaseSession.get_session()
             return session.query(AccountSnapshot).order_by(
                 desc(AccountSnapshot.timestamp)
             ).first()
         except Exception as e:
-            app_logger.error(f"Error getting latest snapshot: {str(e)}")
+            DBLogger.log_error("repository", "Error getting latest snapshot", exception=e)
             raise
         finally:
-            session.close()
+            if session:
+                session.close()
 
-        # data/repository.py (continued)
     def get_snapshots_range(self, from_date, to_date=None):
         """Get account snapshots for a specific date range.
 
@@ -485,8 +520,9 @@ class AccountSnapshotRepository(BaseRepository):
         if to_date is None:
             to_date = datetime.utcnow()
 
-        session = DatabaseSession.get_session()
+        session = None
         try:
+            session = DatabaseSession.get_session()
             snapshots = session.query(AccountSnapshot).filter(
                 AccountSnapshot.timestamp >= from_date,
                 AccountSnapshot.timestamp <= to_date
@@ -494,10 +530,11 @@ class AccountSnapshotRepository(BaseRepository):
 
             return snapshots
         except Exception as e:
-            app_logger.error(f"Error getting account snapshots range: {str(e)}")
+            DBLogger.log_error("repository", "Error getting account snapshots range", exception=e)
             raise
         finally:
-            session.close()
+            if session:
+                session.close()
 
     def get_daily_snapshots(self, days=30):
         """Get one snapshot per day for the last N days.
@@ -510,8 +547,9 @@ class AccountSnapshotRepository(BaseRepository):
         """
         from_date = datetime.utcnow() - timedelta(days=days)
 
-        session = DatabaseSession.get_session()
+        session = None
         try:
+            session = DatabaseSession.get_session()
             # This query gets one snapshot per day (the latest of each day)
             # The specific implementation may vary depending on SQL Server version
             # This is a simplified approach
@@ -535,7 +573,8 @@ class AccountSnapshotRepository(BaseRepository):
 
             return snapshots
         except Exception as e:
-            app_logger.error(f"Error getting daily account snapshots: {str(e)}")
+            DBLogger.log_error("repository", "Error getting daily account snapshots", exception=e)
             raise
         finally:
-            session.close()
+            if session:
+                session.close()

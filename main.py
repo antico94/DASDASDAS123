@@ -1,15 +1,18 @@
-# main.py (improved)
+# main.py (improved with new database logging)
 import os
 import sys
 import time
 import signal
 import argparse
+import logging
 from datetime import datetime, timedelta
-from custom_logging.logger import app_logger
 from config import Config
 from container import Container
 from data.db_session import DatabaseSession
 from data.models import AccountSnapshot, Base
+from db_logger.setup import initialize_logging
+from db_logger.logging_setup import setup_logging
+from db_logger.db_logger import DBLogger
 
 # Global flag for the main loop
 running = True
@@ -18,7 +21,8 @@ running = True
 def signal_handler(sig, frame):
     """Handle Ctrl+C and other termination signals."""
     global running
-    app_logger.info("Shutdown signal received, closing gracefully...")
+    logging.info("Shutdown signal received, closing gracefully...")
+    DBLogger.log_event("INFO", "Shutdown signal received, closing gracefully...", "main")
     running = False
 
 
@@ -33,7 +37,7 @@ def parse_arguments():
 
 def initialize_database():
     """Initialize database schema if it doesn't exist yet."""
-    app_logger.info("Checking database...")
+    logging.info("Checking database...")
     DatabaseSession.initialize()
 
     # Check if tables exist by trying to query one of our tables
@@ -45,7 +49,7 @@ def initialize_database():
         session.close()
 
         if exists:
-            app_logger.info("Database already initialized")
+            logging.info("Database already initialized")
             return
     except Exception:
         # Table doesn't exist, we'll create all tables
@@ -53,9 +57,12 @@ def initialize_database():
     finally:
         session.close()
 
-    app_logger.info("Initializing database schema...")
+    logging.info("Initializing database schema...")
     Base.metadata.create_all(DatabaseSession._engine)
-    app_logger.info("Database schema initialized successfully")
+    logging.info("Database schema initialized successfully")
+
+    # Initialize logging tables
+    initialize_logging()
 
 
 def sync_historical_data(data_fetcher, force=False):
@@ -74,27 +81,31 @@ def sync_historical_data(data_fetcher, force=False):
 
     # Sync if it's been more than 8 hours since last sync or if forced
     if force or last_sync_time is None or (now - last_sync_time) > timedelta(hours=8):
-        app_logger.info(f"Syncing historical data for {Config.SYMBOL}...")
+        logging.info(f"Syncing historical data for {Config.SYMBOL}...")
+        DBLogger.log_event("INFO", f"Syncing historical data for {Config.SYMBOL}...", "data_sync")
 
         for timeframe in timeframes:
             try:
-                app_logger.info(f"Syncing {timeframe} data...")
+                logging.info(f"Syncing {timeframe} data...")
                 synced_count = data_fetcher.sync_missing_data(
                     symbol=Config.SYMBOL,
                     timeframe=timeframe,
                     days_back=60  # For Ichimoku we need more history
                 )
                 if synced_count > 0:
-                    app_logger.info(f"Synced {synced_count} candles for {Config.SYMBOL} {timeframe}")
+                    logging.info(f"Synced {synced_count} candles for {Config.SYMBOL} {timeframe}")
+                    DBLogger.log_event("INFO", f"Synced {synced_count} candles for {Config.SYMBOL} {timeframe}",
+                                       "data_sync")
                 else:
-                    app_logger.info(f"Data for {Config.SYMBOL} {timeframe} already up to date")
+                    logging.info(f"Data for {Config.SYMBOL} {timeframe} already up to date")
             except Exception as e:
-                app_logger.error(f"Error syncing {timeframe} data: {str(e)}")
+                logging.error(f"Error syncing {timeframe} data: {str(e)}")
+                DBLogger.log_error("data_sync", f"Error syncing {timeframe} data", exception=e)
 
         # Update last sync time
         update_last_sync_time(now)
     else:
-        app_logger.info("Historical data is already up to date")
+        logging.info("Historical data is already up to date")
 
 
 def get_last_sync_time():
@@ -115,7 +126,8 @@ def get_last_sync_time():
             return sync_record.timestamp
         return None
     except Exception as e:
-        app_logger.warning(f"Error retrieving last sync time: {str(e)}")
+        logging.warning(f"Error retrieving last sync time: {str(e)}")
+        DBLogger.log_error("data_sync", "Error retrieving last sync time", exception=e)
         return None
     finally:
         session.close()
@@ -144,7 +156,8 @@ def update_last_sync_time(timestamp):
         session.commit()
     except Exception as e:
         session.rollback()
-        app_logger.warning(f"Error updating last sync time: {str(e)}")
+        logging.warning(f"Error updating last sync time: {str(e)}")
+        DBLogger.log_error("data_sync", "Error updating last sync time", exception=e)
     finally:
         session.close()
 
@@ -172,11 +185,22 @@ def take_account_snapshot(connector, account_repo):
         # Save to database
         account_repo.add(snapshot)
 
-        app_logger.debug(
+        logging.debug(
             f"Account snapshot: balance=${account_info['balance']:.2f}, equity=${account_info['equity']:.2f}")
 
+        # Log to the dedicated account snapshots table
+        DBLogger.log_account_snapshot(
+            balance=account_info['balance'],
+            equity=account_info['equity'],
+            margin=account_info['margin'],
+            free_margin=account_info['free_margin'],
+            margin_level=account_info['margin_level'],
+            open_positions=open_positions
+        )
+
     except Exception as e:
-        app_logger.error(f"Error taking account snapshot: {str(e)}")
+        logging.error(f"Error taking account snapshot: {str(e)}")
+        DBLogger.log_error("account_snapshot", "Error taking account snapshot", exception=e)
 
 
 def run_strategies(enabled_strategies, container, signal_repo, simulation_mode=False):
@@ -206,6 +230,18 @@ def run_strategies(enabled_strategies, container, signal_repo, simulation_mode=F
                 signal_repo.add(signal)
                 generated_signals.append(signal)
 
+                # Log the signal to events table
+                signal_data = {
+                    "strategy": "moving_average",
+                    "symbol": signal.symbol,
+                    "signal_type": signal.signal_type,
+                    "price": signal.price,
+                    "strength": signal.strength
+                }
+                DBLogger.log_event("SIGNAL",
+                                   f"Generated {signal.signal_type} signal for {signal.symbol} at {signal.price}",
+                                   "moving_average", signal_data)
+
         # Run Breakout strategy if enabled
         if "breakout" in enabled_strategies:
             breakout_strategy = container.breakout_strategy()
@@ -217,6 +253,18 @@ def run_strategies(enabled_strategies, container, signal_repo, simulation_mode=F
                     signal.comment = "SIMULATION_MODE"
                 signal_repo.add(signal)
                 generated_signals.append(signal)
+
+                # Log the signal to events table
+                signal_data = {
+                    "strategy": "breakout",
+                    "symbol": signal.symbol,
+                    "signal_type": signal.signal_type,
+                    "price": signal.price,
+                    "strength": signal.strength
+                }
+                DBLogger.log_event("SIGNAL",
+                                   f"Generated {signal.signal_type} signal for {signal.symbol} at {signal.price}",
+                                   "breakout", signal_data)
 
         # Run Range-Bound strategy if enabled
         if "range_bound" in enabled_strategies:
@@ -230,6 +278,18 @@ def run_strategies(enabled_strategies, container, signal_repo, simulation_mode=F
                 signal_repo.add(signal)
                 generated_signals.append(signal)
 
+                # Log the signal to events table
+                signal_data = {
+                    "strategy": "range_bound",
+                    "symbol": signal.symbol,
+                    "signal_type": signal.signal_type,
+                    "price": signal.price,
+                    "strength": signal.strength
+                }
+                DBLogger.log_event("SIGNAL",
+                                   f"Generated {signal.signal_type} signal for {signal.symbol} at {signal.price}",
+                                   "range_bound", signal_data)
+
         # Run Momentum Scalping strategy if enabled
         if "momentum_scalping" in enabled_strategies:
             momentum_strategy = container.momentum_scalping_strategy()
@@ -241,6 +301,18 @@ def run_strategies(enabled_strategies, container, signal_repo, simulation_mode=F
                     signal.comment = "SIMULATION_MODE"
                 signal_repo.add(signal)
                 generated_signals.append(signal)
+
+                # Log the signal to events table
+                signal_data = {
+                    "strategy": "momentum_scalping",
+                    "symbol": signal.symbol,
+                    "signal_type": signal.signal_type,
+                    "price": signal.price,
+                    "strength": signal.strength
+                }
+                DBLogger.log_event("SIGNAL",
+                                   f"Generated {signal.signal_type} signal for {signal.symbol} at {signal.price}",
+                                   "momentum_scalping", signal_data)
 
         # Run Ichimoku strategy if enabled
         if "ichimoku" in enabled_strategies:
@@ -254,12 +326,26 @@ def run_strategies(enabled_strategies, container, signal_repo, simulation_mode=F
                 signal_repo.add(signal)
                 generated_signals.append(signal)
 
+                # Log the signal to events table
+                signal_data = {
+                    "strategy": "ichimoku",
+                    "symbol": signal.symbol,
+                    "signal_type": signal.signal_type,
+                    "price": signal.price,
+                    "strength": signal.strength
+                }
+                DBLogger.log_event("SIGNAL",
+                                   f"Generated {signal.signal_type} signal for {signal.symbol} at {signal.price}",
+                                   "ichimoku", signal_data)
+
         if generated_signals:
             signal_types = [s.signal_type for s in generated_signals]
-            app_logger.info(f"Generated {len(generated_signals)} signals: {signal_types}")
+            logging.info(f"Generated {len(generated_signals)} signals: {signal_types}")
+            DBLogger.log_event("INFO", f"Generated {len(generated_signals)} signals: {signal_types}", "strategies")
 
     except Exception as e:
-        app_logger.error(f"Error running strategies: {str(e)}")
+        logging.error(f"Error running strategies: {str(e)}")
+        DBLogger.log_error("strategies", "Error running strategies", exception=e)
         return 0
 
     return len(generated_signals)
@@ -269,7 +355,8 @@ def process_trades(order_manager, trailing_stop_manager, simulation_mode=False):
     """Process pending signals and manage open trades."""
     try:
         if simulation_mode:
-            app_logger.info("Simulation mode: skipping real trade execution")
+            logging.info("Simulation mode: skipping real trade execution")
+            DBLogger.log_event("INFO", "Simulation mode: skipping real trade execution", "execution")
             return
 
         # Process pending signals
@@ -279,28 +366,29 @@ def process_trades(order_manager, trailing_stop_manager, simulation_mode=False):
         trailing_stop_manager.update_trailing_stops()
 
     except Exception as e:
-        app_logger.error(f"Error processing trades: {str(e)}")
+        logging.error(f"Error processing trades: {str(e)}")
+        DBLogger.log_error("execution", "Error processing trades", exception=e)
 
 
 def configure_logging(verbose=False):
     """Configure logging level based on verbose flag."""
-    import logging
-
-    # Set console handler to INFO by default or DEBUG if verbose
+    # Configure standard Python logging
     log_level = logging.DEBUG if verbose else logging.INFO
+    log_file = "logs/trading_bot.log"
 
-    # Get the root logger
-    root_logger = logging.getLogger()
+    # Create logs directory if it doesn't exist
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
-    # Set the level for the console handler
-    for handler in root_logger.handlers:
-        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
-            handler.setLevel(log_level)
+    # Setup logging with both Python logging and DB logging
+    setup_logging(
+        console_level=log_level,
+        file_level=logging.DEBUG,
+        db_level=log_level,
+        log_file=log_file
+    )
 
-    # Silence specific loggers that are too verbose
-    logging.getLogger('sqlalchemy.engine').setLevel(logging.WARNING)
-
-    app_logger.info(f"Logging configured: {'verbose' if verbose else 'normal'} mode")
+    logging.info(f"Logging configured: {'verbose' if verbose else 'normal'} mode")
+    DBLogger.log_event("INFO", f"Logging configured: {'verbose' if verbose else 'normal'} mode", "system")
 
 
 def main():
@@ -316,6 +404,12 @@ def main():
 
     # Set environment
     os.environ['TRADING_BOT_ENV'] = args.env
+
+    # Initialize database automatically (no need for --init-db flag)
+    initialize_database()
+
+    # Configure logging
+    configure_logging(args.verbose)
 
     # Configure container
     container = Container()
@@ -360,22 +454,27 @@ def main():
         "ic_senkou_b_period": Config.IC_SENKOU_B_PERIOD
     })
 
-    # Configure logging based on verbosity flag
-    configure_logging(args.verbose)
+    logging.info(f"Starting {Config.APP_NAME} v{Config.VERSION} in {args.env} environment")
+    logging.info(f"Trading mode: {'SIMULATION' if args.no_trade else 'LIVE'}")
 
-    app_logger.info(f"Starting {Config.APP_NAME} v{Config.VERSION} in {args.env} environment")
-    app_logger.info(f"Trading mode: {'SIMULATION' if args.no_trade else 'LIVE'}")
-
-    # Initialize database automatically (no need for --init-db flag)
-    initialize_database()
+    # Log startup to events table
+    DBLogger.log_event("INFO", f"Starting {Config.APP_NAME} v{Config.VERSION} in {args.env} environment", "system")
+    DBLogger.log_event("INFO", f"Trading mode: {'SIMULATION' if args.no_trade else 'LIVE'}", "system")
 
     # Connect to MT5
     try:
         connector = container.mt5_connector()
         account_info = connector.get_account_info()
-        app_logger.info(f"Connected to MetaTrader 5 successfully. Account balance: ${account_info['balance']:.2f}")
+        logging.info(f"Connected to MetaTrader 5 successfully. Account balance: ${account_info['balance']:.2f}")
+
+        # Log connection to events table
+        DBLogger.log_event("INFO",
+                           f"Connected to MetaTrader 5 successfully. Account balance: ${account_info['balance']:.2f}",
+                           "connection")
+
     except Exception as e:
-        app_logger.error(f"Failed to connect to MetaTrader 5: {str(e)}")
+        logging.error(f"Failed to connect to MetaTrader 5: {str(e)}")
+        DBLogger.log_error("connection", "Failed to connect to MetaTrader 5", exception=e)
         return 1
 
     # Initialize repositories
@@ -405,7 +504,8 @@ def main():
     last_sync_check_time = datetime.min
     sync_check_interval = timedelta(hours=4)  # Check if sync needed every 4 hours
 
-    app_logger.info("Bot is now running. Press Ctrl+C to stop.")
+    logging.info("Bot is now running. Press Ctrl+C to stop.")
+    DBLogger.log_event("INFO", "Bot is now running", "system")
 
     try:
         while running:
@@ -447,13 +547,15 @@ def main():
             time.sleep(1)
 
     except Exception as e:
-        app_logger.error(f"Error in main loop: {str(e)}")
+        logging.error(f"Error in main loop: {str(e)}")
+        DBLogger.log_error("system", "Error in main loop", exception=e)
         return 1
     finally:
         # Clean up resources
         connector.disconnect()
         DatabaseSession.close_session()
-        app_logger.info(f"{Config.APP_NAME} shutdown complete")
+        logging.info(f"{Config.APP_NAME} shutdown complete")
+        DBLogger.log_event("INFO", f"{Config.APP_NAME} shutdown complete", "system")
 
     return 0
 

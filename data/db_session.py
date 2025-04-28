@@ -1,9 +1,9 @@
 # data/db_session.py
+import logging
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, scoped_session
 from config import Config
-from custom_logging.logger import app_logger
 
 # Create base class for all models
 Base = declarative_base()
@@ -14,6 +14,7 @@ class DatabaseSession:
 
     _engine = None
     _session_factory = None
+    _logger = logging.getLogger(__name__)
 
     @classmethod
     def initialize(cls, database_uri=None):
@@ -26,7 +27,8 @@ class DatabaseSession:
         if database_uri is None:
             database_uri = Config.DATABASE_URI
 
-        app_logger.info(f"Initializing database connection")
+        # Use standard logging first before db_logger is available
+        cls._logger.info(f"Initializing database connection")
 
         try:
             # Create engine with appropriate settings
@@ -47,10 +49,30 @@ class DatabaseSession:
                 )
             )
 
-            app_logger.debug("Database session initialized successfully")
+            cls._logger.debug("Database session initialized successfully")
+
+            # Once initialization is complete, we can try to use DBLogger
+            # But we need to avoid a circular import during bootstrapping
+            from db_logger.db_logger import DBLogger
+
+            try:
+                DBLogger.log_event("INFO", "Database session initialized successfully", "DatabaseSession")
+            except ImportError:
+                # If DBLogger is not yet available, we've already logged with standard logging
+                pass
 
         except Exception as e:
-            app_logger.error(f"Failed to initialize database: {str(e)}")
+            cls._logger.error(f"Failed to initialize database: {str(e)}")
+
+            # Try to use DBLogger if available
+            from db_logger.db_logger import DBLogger
+
+            try:
+                DBLogger.log_error("DatabaseSession", "Failed to initialize database", exception=e)
+            except ImportError:
+                # DBLogger not available during bootstrapping - we've already logged with standard logging
+                pass
+
             raise
 
     @classmethod
@@ -59,9 +81,17 @@ class DatabaseSession:
         if cls._engine is None:
             cls.initialize()
 
-        app_logger.info("Creating database tables...")
+        cls._logger.info("Creating database tables...")
         Base.metadata.create_all(cls._engine)
-        app_logger.info("Database tables created successfully")
+        cls._logger.info("Database tables created successfully")
+
+        # Try to use DBLogger if available
+        try:
+            from db_logger.db_logger import DBLogger
+            DBLogger.log_event("INFO", "Database tables created successfully", "DatabaseSession")
+        except ImportError:
+            # DBLogger not available - we've already logged with standard logging
+            pass
 
     @classmethod
     def get_session(cls):
@@ -80,4 +110,12 @@ class DatabaseSession:
         """Close the current scoped session."""
         if cls._session_factory is not None:
             cls._session_factory.remove()
-            app_logger.debug("Database session closed")
+            cls._logger.debug("Database session closed")
+
+            # Try to use DBLogger if available
+            try:
+                from db_logger.db_logger import DBLogger
+                DBLogger.log_event("DEBUG", "Database session closed", "DatabaseSession")
+            except ImportError:
+                # DBLogger not available - we've already logged with standard logging
+                pass
