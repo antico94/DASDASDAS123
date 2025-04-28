@@ -1,5 +1,6 @@
 # mt5_connector/connection.py
 import os
+import re
 import time
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta
@@ -232,7 +233,7 @@ class MT5Connector:
                     stop_loss=0.0, take_profit=0.0, comment=""):
         """Place a new order in MT5."""
         self.ensure_connection()
-
+        comment = self._sanitize_comment(comment)
         # Validate inputs
         symbol_info = self.get_symbol_info(symbol)
 
@@ -422,3 +423,39 @@ class MT5Connector:
             'close_price': result.price,
             'profit': result.profit
         }
+
+    @staticmethod
+    def _sanitize_comment(comment):
+        """
+        Sanitize the comment for MT5 trade requests based on common strict broker rules.
+        Allows ONLY letters (a-z, A-Z) and digits (0-9).
+        Truncates to a max length of 63.
+        Provides a default if sanitization results in an empty string.
+        """
+        # Ensure the input is treated as a string
+        try:
+            comment_str = str(comment)
+        except Exception:
+            # Handle cases where str() might fail for very unusual inputs
+            comment_str = ""
+            app_logger.warning(f"Could not convert comment to string: {comment}. Using empty string.")
+
+        # --- MODIFIED REGEX ---
+        # Remove any characters NOT in the allowed set: letters, digits
+        # This removes underscores, hash, brackets, spaces, punctuation etc.
+        sanitized = re.sub(r'[^a-zA-Z0-9]', '', comment_str)
+        # ----------------------
+
+        # Truncate to the maximum allowed length (63 characters for MT5 comments)
+        max_length = 63
+        sanitized = sanitized[:max_length]
+
+        # If sanitization results in an empty string, use a safe default comment
+        # This prevents sending a blank comment if the original was all disallowed characters
+        if not sanitized:
+            sanitized = "BotOrder" # Or use a more specific default like "Signal"
+
+        # Add a debug log here to see the final comment being used
+        app_logger.debug(f"Original comment: '{comment_str}' -> Sanitized comment: '{sanitized}'")
+
+        return sanitized
