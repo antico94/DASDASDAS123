@@ -1,34 +1,51 @@
 # execution/order_manager.py
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from db_logger.db_logger import DBLogger
 from mt5_connector.connection import MT5Connector
-from data.repository import TradeRepository, StrategySignalRepository
+from data.repository import TradeRepository, StrategySignalRepository, AccountSnapshotRepository
 from data.models import Trade
 from risk_management.position_sizing import PositionSizer
 from risk_management.risk_validator import RiskValidator
+from config import Config
 
 
 class EnhancedOrderManager:
-    """Enhanced class to manage order execution with partial profit-taking and trailing stops."""
+    """Enhanced class to manage order execution with dynamic risk allocation, session awareness,
+    partial profit-taking and advanced trailing stops."""
 
-    def __init__(self, connector=None, trade_repository=None,
+    def __init__(self, connector=None, trade_repository=None, account_repository=None,
                  signal_repository=None, position_sizer=None, risk_validator=None):
         """Initialize the enhanced order manager.
 
         Args:
-            connector (MT5Connector, optional): MT5 connector. Defaults to None.
-            trade_repository (TradeRepository, optional): Trade repository. Defaults to None.
-            signal_repository (StrategySignalRepository, optional): Signal repository. Defaults to None.
-            position_sizer (PositionSizer, optional): Position sizer. Defaults to None.
-            risk_validator (RiskValidator, optional): Risk validator. Defaults to None.
+            connector (MT5Connector, optional): MT5 connector. Defaults to None (creates new).
+            trade_repository (TradeRepository, optional): Trade repository. Defaults to None (creates new).
+            account_repository (AccountSnapshotRepository, optional): Account repository. Defaults to None.
+            signal_repository (StrategySignalRepository, optional): Signal repository. Defaults to None (creates new).
+            position_sizer (PositionSizer, optional): Position sizer. Defaults to None (creates new).
+            risk_validator (RiskValidator, optional): Risk validator. Defaults to None (creates new).
         """
         self.connector = connector or MT5Connector()
         self.trade_repository = trade_repository or TradeRepository()
+        self.account_repository = account_repository or AccountSnapshotRepository()
         self.signal_repository = signal_repository or StrategySignalRepository()
         self.position_sizer = position_sizer or PositionSizer(connector=self.connector)
         self.risk_validator = risk_validator or RiskValidator(connector=self.connector)
+
+        # Maximum position scaling (for adding to winning positions)
+        self.max_scale_in_count = 1  # Maximum number of times to scale into a position
+
+        # Base risk percentage (will be dynamically adjusted)
+        self.base_risk_percent = Config.MAX_RISK_PER_TRADE_PERCENT
+
+        # Maximum total risk exposure across all positions
+        self.max_total_risk_percent = Config.MAX_DAILY_RISK_PERCENT  # Default to max daily risk
+
+        # Track recent strategy performance for dynamic risk adjustment
+        self.recent_trades = []  # Store last N trade results
+        self.max_recent_trades = 10  # Number of recent trades to track
 
     def process_pending_signals(self):
         """Process all pending trade signals with enhanced trade management.
@@ -78,7 +95,8 @@ class EnhancedOrderManager:
         Returns:
             bool: True if executed successfully, False otherwise
         """
-        DBLogger.log_event("INFO", f"Executing signal {signal.id}: {signal.signal_type} for {signal.symbol}", "OrderManager")
+        DBLogger.log_event("INFO", f"Executing signal {signal.id}: {signal.signal_type} for {signal.symbol}",
+                           "OrderManager")
 
         try:
             # Parse metadata
@@ -97,6 +115,139 @@ class EnhancedOrderManager:
         except Exception as e:
             DBLogger.log_error("OrderManager", f"Error executing signal {signal.id}", exception=e)
             return False
+
+    def _compute_dynamic_risk_percent(self, signal, metadata):
+        """Calculate dynamic risk percentage based on market conditions,
+        strategy confidence, session, and recent performance.
+
+        Args:
+            signal (StrategySignal): The signal to calculate risk for
+            metadata (dict): Signal metadata with additional information
+
+        Returns:
+            float: Risk percentage to use for this trade
+        """
+        # Start with base risk
+        risk_percent = self.base_risk_percent
+
+        # 1. Adjust by current session (time-based)
+        current_hour = datetime.utcnow().hour
+
+        # London/NY overlap (higher liquidity, can be more aggressive)
+        if 13 <= current_hour < 17:
+            risk_percent *= 1.2  # Increase risk by 20% during high liquidity
+            DBLogger.log_event("DEBUG", "London/NY overlap: Increasing risk by 20%", "OrderManager")
+        # Asian session (lower liquidity, be more conservative)
+        elif 0 <= current_hour < 6:
+            risk_percent *= 0.8  # Reduce risk by 20% during low liquidity
+            DBLogger.log_event("DEBUG", "Asian session: Reducing risk by 20%", "OrderManager")
+
+        # 2. Adjust by signal strength (if available in metadata)
+        signal_strength = metadata.get('strength', 0.5)
+
+        # Scale risk by signal strength (stronger signals get more risk)
+        strength_factor = 0.8 + (signal_strength * 0.4)  # Range from 0.8 to 1.2
+        risk_percent *= strength_factor
+
+        # 3. Adjust by recent performance (anti-martingale approach)
+        if self.recent_trades:
+            # Calculate win rate from recent trades
+            wins = sum(1 for result in self.recent_trades if result)
+            win_rate = wins / len(self.recent_trades)
+
+            # If winning > 70%, slightly increase risk
+            if win_rate > 0.7:
+                risk_percent *= 1.1
+                DBLogger.log_event("DEBUG", f"High win rate ({win_rate:.2f}): Increasing risk by 10%", "OrderManager")
+            # If winning < 30%, slightly decrease risk
+            elif win_rate < 0.3:
+                risk_percent *= 0.9
+                DBLogger.log_event("DEBUG", f"Low win rate ({win_rate:.2f}): Decreasing risk by 10%", "OrderManager")
+
+        # 4. Check for strategy confluence (multiple strategies agreeing)
+        # This would require tracking active positions from other strategies
+        # and checking if they align with this signal - outside current scope
+
+        # 5. Calculate current open risk
+        current_risk = self._calculate_current_risk_exposure()
+        available_risk = self.max_total_risk_percent - current_risk
+
+        # If available risk is less than calculated risk, reduce to available
+        if available_risk < risk_percent:
+            old_risk = risk_percent
+            risk_percent = max(0, available_risk)
+            DBLogger.log_event("INFO",
+                               f"Reducing risk from {old_risk:.2f}% to {risk_percent:.2f}% "
+                               f"due to max exposure limit ({self.max_total_risk_percent:.2f}%)",
+                               "OrderManager")
+
+            # If we have almost no risk available, consider skipping trade
+            if risk_percent < self.base_risk_percent * 0.25:  # Less than 25% of normal risk
+                DBLogger.log_event("WARNING",
+                                   f"Available risk too low ({risk_percent:.2f}%), consider skipping trade",
+                                   "OrderManager")
+
+        # Ensure risk percent is within reasonable bounds (0.1% to 2%)
+        risk_percent = max(0.1, min(risk_percent, 2.0))
+
+        return risk_percent
+
+    def _calculate_current_risk_exposure(self):
+        """Calculate the current risk exposure from all open positions.
+
+        Returns:
+            float: Current risk exposure as percentage of account
+        """
+        # Get account information
+        account_info = self.connector.get_account_info()
+        account_balance = account_info.get('balance', 0)
+
+        if account_balance == 0:
+            return 0  # Avoid division by zero
+
+        # Get all open positions
+        positions = self.connector.get_positions()
+
+        # Calculate total risk amount across all positions
+        total_risk = 0
+        for position in positions:
+            entry = position.get('open_price', 0)
+            stop = position.get('stop_loss', 0)
+            volume = position.get('volume', 0)
+
+            # Skip positions without stops
+            if stop == 0:
+                continue
+
+            # Calculate position risk in currency units
+            pip_value = self._calculate_pip_value(position['symbol'], volume)
+            risk_amount = abs(entry - stop) * pip_value
+
+            # Add to total
+            total_risk += risk_amount
+
+        # Convert to percentage of account
+        risk_percent = (total_risk / account_balance) * 100
+
+        return risk_percent
+
+    def _calculate_pip_value(self, symbol, volume):
+        """Calculate the value of 1 pip for a given symbol and volume.
+
+        Args:
+            symbol (str): The trading symbol
+            volume (float): The trade volume in lots
+
+        Returns:
+            float: The value of 1 pip in account currency
+        """
+        # For XAU/USD, 1 pip is typically $0.1 per lot
+        # Full calculation would require symbol information from broker
+        if symbol == "XAUUSD":
+            return 0.1 * volume * 10  # 1 pip = $1 for 1.0 lot (100 oz)
+        else:
+            # Default fallback
+            return 0.1 * volume * 10  # Generic estimate
 
     def _execute_entry_signal(self, signal, metadata):
         """Execute an entry (BUY/SELL) signal with enhanced position management.
@@ -137,7 +288,8 @@ class EnhancedOrderManager:
         stop_loss = self._calculate_strategy_stop_loss(signal, metadata, order_type)
 
         # Log the stop loss calculation
-        DBLogger.log_event("DEBUG", f"Calculated stop loss: {stop_loss} for {signal.signal_type} signal", "OrderManager")
+        DBLogger.log_event("DEBUG", f"Calculated stop loss: {stop_loss} for {signal.signal_type} signal",
+                           "OrderManager")
 
         # Validate stop loss
         if not self.risk_validator.validate_stop_loss(
@@ -155,14 +307,27 @@ class EnhancedOrderManager:
             DBLogger.log_event("WARNING", f"Risk validation failed: {reason}", "OrderManager")
             return False
 
-        # Calculate position size based on risk
+        # Calculate dynamic risk percentage based on market conditions
+        dynamic_risk_percent = self._compute_dynamic_risk_percent(signal, metadata)
+
+        # Calculate position size based on dynamic risk
         atr_value = metadata.get('atr', None)
+
+        # Store the original max risk percent
+        original_risk_percent = self.position_sizer.max_risk_percent
+
+        # Temporarily set the position sizer's risk percentage to our dynamic value
+        self.position_sizer.max_risk_percent = dynamic_risk_percent
+
         position_size = self.position_sizer.calculate_position_size(
             symbol=signal.symbol,
             entry_price=signal.price,
             stop_loss_price=stop_loss,
             atr_value=atr_value
         )
+
+        # Restore the original risk percent
+        self.position_sizer.max_risk_percent = original_risk_percent
 
         # Validate position size
         if position_size is None or not self.position_sizer.validate_position_size(signal.symbol, position_size):
@@ -174,9 +339,9 @@ class EnhancedOrderManager:
             signal, metadata, stop_loss, order_type
         )
 
-        # Use two-part trade execution as specified in the plan
+        # Use two-part trade execution for risk management
         return self._execute_with_partial_profit(
-            signal, metadata, order_type, stop_loss, position_size, take_profit_levels
+            signal, metadata, order_type, stop_loss, position_size, take_profit_levels, dynamic_risk_percent
         )
 
     def _calculate_strategy_stop_loss(self, signal, metadata, order_type):
@@ -295,6 +460,9 @@ class EnhancedOrderManager:
                     else:
                         stop_loss = current_price * 1.005
 
+        # Adjust stop loss based on session volatility
+        stop_loss = self._adjust_stop_for_session(signal.price, stop_loss, order_type)
+
         # Final validation
         if stop_loss <= 0:
             DBLogger.log_event("WARNING", f"Invalid calculated stop loss: {stop_loss}, using fallback", "OrderManager")
@@ -303,11 +471,53 @@ class EnhancedOrderManager:
 
         # Log the strategy-specific stop calculation
         DBLogger.log_event("DEBUG",
-            f"Calculated {strategy_name} stop loss: {stop_loss} "
-            f"for {signal.signal_type} at {signal.price}",
-            "OrderManager")
+                           f"Calculated {strategy_name} stop loss: {stop_loss} "
+                           f"for {signal.signal_type} at {signal.price}",
+                           "OrderManager")
 
         return stop_loss
+
+    def _adjust_stop_for_session(self, entry_price, stop_loss, order_type):
+        """Adjust stop loss distance based on current trading session.
+
+        Args:
+            entry_price (float): Entry price
+            stop_loss (float): Originally calculated stop loss
+            order_type (int): Order type (0=BUY, 1=SELL)
+
+        Returns:
+            float: Adjusted stop loss price
+        """
+        # Get current UTC hour
+        current_hour = datetime.utcnow().hour
+
+        # Calculate the initial stop distance
+        initial_distance = abs(entry_price - stop_loss)
+        adjusted_distance = initial_distance
+
+        # Asian session (lower liquidity, wider stops)
+        if 0 <= current_hour < 6:
+            adjusted_distance = initial_distance * 1.2  # 20% wider during Asian session
+            DBLogger.log_event("DEBUG",
+                               f"Asian session: Widening stop by 20% from {initial_distance:.2f} to {adjusted_distance:.2f}",
+                               "OrderManager")
+        # European pre-London (moderate liquidity)
+        elif 6 <= current_hour < 8:
+            adjusted_distance = initial_distance * 1.1  # 10% wider
+        # London/NY overlap (highest liquidity, can use tighter stops)
+        elif 13 <= current_hour < 17:
+            adjusted_distance = initial_distance * 0.95  # 5% tighter during peak liquidity
+            DBLogger.log_event("DEBUG",
+                               f"London/NY overlap: Tightening stop by 5% from {initial_distance:.2f} to {adjusted_distance:.2f}",
+                               "OrderManager")
+
+        # Apply the adjusted distance
+        if order_type == 0:  # BUY
+            adjusted_stop = entry_price - adjusted_distance
+        else:  # SELL
+            adjusted_stop = entry_price + adjusted_distance
+
+        return adjusted_stop
 
     def _calculate_strategy_take_profits(self, signal, metadata, stop_loss, order_type):
         """Calculate take-profit levels based on strategy requirements.
@@ -400,14 +610,15 @@ class EnhancedOrderManager:
             tp2 = entry_price - (risk * r2)
 
         DBLogger.log_event("DEBUG",
-            f"Calculated {strategy_name} take-profits: {[tp1, tp2]} "
-            f"(based on risk={risk} with R:R={[r1, r2]})",
-            "OrderManager")
+                           f"Calculated {strategy_name} take-profits: {[tp1, tp2]} "
+                           f"(based on risk={risk} with R:R={[r1, r2]})",
+                           "OrderManager")
 
         return [tp1, tp2]
 
-    def _execute_with_partial_profit(self, signal, metadata, order_type, stop_loss, position_size, take_profit_levels):
-        """Execute an entry with the two-part profit strategy specified in the plan.
+    def _execute_with_partial_profit(self, signal, metadata, order_type, stop_loss, position_size, take_profit_levels,
+                                     risk_percent):
+        """Execute an entry with the two-part profit strategy for effective risk management.
 
         Args:
             signal (StrategySignal): The entry signal
@@ -416,6 +627,7 @@ class EnhancedOrderManager:
             stop_loss (float): Stop loss price
             position_size (float): Total position size
             take_profit_levels (list): List of [tp1, tp2] prices
+            risk_percent (float): Risk percentage used for this trade
 
         Returns:
             bool: True if executed successfully, False otherwise
@@ -437,8 +649,8 @@ class EnhancedOrderManager:
             if position_size_1 < min_lot or position_size_2 < min_lot:
                 # Can't split, use single position approach
                 DBLogger.log_event("WARNING",
-                    f"Position size too small to split: {position_size}. Using single position.",
-                    "OrderManager")
+                                   f"Position size too small to split: {position_size}. Using single position.",
+                                   "OrderManager")
 
                 # Use combined position with first target
                 comment = f"Signal_{signal.id}_{signal.strategy_name}"
@@ -489,8 +701,11 @@ class EnhancedOrderManager:
                     ticket=order_result['ticket'],
                     strategy=signal.strategy_name,
                     message=f"Executed {signal.signal_type} order: {position_size} lots of {signal.symbol} "
-                           f"at ${order_result['price']:.2f}, SL=${stop_loss:.2f}, TP=${take_profit_levels[0]:.2f}"
+                            f"at ${order_result['price']:.2f}, SL=${stop_loss:.2f}, TP=${take_profit_levels[0]:.2f}"
                 )
+
+                # Update recent trades tracking (placeholder until we know the outcome)
+                self._track_trade_for_risk_adjustment(signal.id, None)
 
                 return True
 
@@ -604,11 +819,44 @@ class EnhancedOrderManager:
                                f"${order_result_2['price']:.2f}, TP=${take_profit_levels[1]:.2f}",
                                "OrderManager")
 
+            # Update recent trades tracking (placeholder until we know the outcome)
+            self._track_trade_for_risk_adjustment(signal.id, None)
+
             return True
 
         except Exception as e:
             DBLogger.log_error("OrderManager", f"Error executing partial profit strategy", exception=e)
             return False
+
+    def _track_trade_for_risk_adjustment(self, signal_id, profit=None):
+        """Track trade outcome for dynamic risk adjustment.
+
+        Args:
+            signal_id (int): ID of the signal that generated the trade
+            profit (float, optional): Trade profit (if known). None if trade is still open.
+        """
+        # If profit is None, we're just recording a new trade
+        if profit is None:
+            # We'll update the result when the trade closes
+            return
+
+        # If profit is provided, we're recording a closed trade
+        is_win = profit > 0
+
+        # Add to recent trades list (True for win, False for loss)
+        self.recent_trades.append(is_win)
+
+        # Keep only the most recent trades
+        if len(self.recent_trades) > self.max_recent_trades:
+            self.recent_trades.pop(0)
+
+        # Log the updated performance
+        wins = sum(1 for result in self.recent_trades if result)
+        win_rate = wins / len(self.recent_trades) if self.recent_trades else 0
+
+        DBLogger.log_event("INFO",
+                           f"Updated recent performance: {wins}/{len(self.recent_trades)} wins ({win_rate:.1%} win rate)",
+                           "OrderManager")
 
     def _execute_close_signal(self, signal, metadata):
         """Execute a close signal to exit an existing position.
@@ -668,6 +916,9 @@ class EnhancedOrderManager:
                             trade.close_time = datetime.utcnow()
                             trade.profit = close_result['profit']
                             self.trade_repository.update(trade)
+
+                            # Update trade tracking for risk adjustment
+                            self._track_trade_for_risk_adjustment(trade.signal_id, close_result['profit'])
                             break
 
                     # Log close execution
@@ -693,3 +944,202 @@ class EnhancedOrderManager:
         except Exception as e:
             DBLogger.log_error("OrderManager", f"Error executing close signal", exception=e)
             return False
+
+    def check_scaling_opportunities(self):
+        """Check open positions for scaling in opportunities.
+
+        This method evaluates open positions to see if any qualify for scaling in
+        (adding to profitable positions).
+
+        Returns:
+            int: Number of positions scaled into
+        """
+        # Get all open positions
+        positions = self.connector.get_positions()
+
+        if not positions:
+            return 0
+
+        scaled_count = 0
+
+        # Extract unique trades (combining Part1/Part2 of the same signal)
+        unique_trades = {}
+        for position in positions:
+            # Extract signal ID and strategy from comment
+            signal_id = self._extract_signal_id_from_comment(position['comment'])
+            if not signal_id:
+                continue
+
+            # Group by signal ID
+            if signal_id not in unique_trades:
+                unique_trades[signal_id] = []
+            unique_trades[signal_id].append(position)
+
+        # For each unique trade, check scaling opportunity
+        for signal_id, positions in unique_trades.items():
+            # Skip if no positions for this signal
+            if not positions:
+                continue
+
+            # Get first position to extract common data
+            first_pos = positions[0]
+            symbol = first_pos['symbol']
+            direction = first_pos['type']  # 0=BUY, 1=SELL
+
+            # Check if we already have scaled in positions
+            has_scale_in = any("ScaleIn" in pos['comment'] for pos in positions)
+
+            # If already scaled in to maximum, skip
+            if has_scale_in and len([p for p in positions if "ScaleIn" in p['comment']]) >= self.max_scale_in_count:
+                continue
+
+            # Find the original entry price (average if multiple positions)
+            entry_prices = [pos['open_price'] for pos in positions if "ScaleIn" not in pos['comment']]
+            if not entry_prices:
+                continue
+
+            avg_entry = sum(entry_prices) / len(entry_prices)
+
+            # Get current price
+            current_price = first_pos['current_price']
+
+            # Calculate profit in risk multiples (R)
+            # Find the initial risk
+            initial_stops = [pos['stop_loss'] for pos in positions if "ScaleIn" not in pos['comment']]
+            if not initial_stops:
+                continue
+
+            initial_stop = initial_stops[0]  # Use first position's stop
+            initial_risk = abs(avg_entry - initial_stop)
+
+            if initial_risk <= 0:
+                continue  # Skip if can't determine risk
+
+            # Calculate current profit in R
+            if direction == 0:  # BUY
+                current_profit_r = (current_price - avg_entry) / initial_risk
+            else:  # SELL
+                current_profit_r = (avg_entry - current_price) / initial_risk
+
+            # If profit is at least 1R, consider scaling in
+            if current_profit_r >= 1.0:
+                # Get strategy name
+                strategy_name = self._extract_strategy_name_from_comment(first_pos['comment'])
+                if not strategy_name:
+                    continue
+
+                # Determine scale-in size (half of original position)
+                original_volume = sum(pos['volume'] for pos in positions if "ScaleIn" not in pos['comment'])
+                scale_in_volume = original_volume * 0.5
+
+                # Ensure minimum lot size
+                symbol_info = self.connector.get_symbol_info(symbol)
+                min_lot = symbol_info['lot_step']
+                if scale_in_volume < min_lot:
+                    continue  # Too small to scale in
+
+                # Round to allowed lot size
+                lot_step = symbol_info['lot_step']
+                scale_in_volume = round(scale_in_volume / lot_step) * lot_step
+
+                # Create a new stop loss at breakeven or better
+                if direction == 0:  # BUY
+                    new_stop = max(avg_entry, initial_stop)  # At least breakeven
+                else:  # SELL
+                    new_stop = min(avg_entry, initial_stop)  # At least breakeven
+
+                # Calculate take profit (same as the second target from originals)
+                take_profits = [pos['take_profit'] for pos in positions if "Part2" in pos['comment']]
+                if not take_profits:
+                    # Fallback: 2x risk from current price
+                    if direction == 0:  # BUY
+                        take_profit = current_price + initial_risk
+                    else:  # SELL
+                        take_profit = current_price - initial_risk
+                else:
+                    take_profit = take_profits[0]  # Use the part2 take profit
+
+                # Create the comment for scaling
+                comment = f"Signal_{signal_id}_{strategy_name}_ScaleIn"
+
+                # Log order request
+                DBLogger.log_order_request(
+                    order_type="BUY" if direction == 0 else "SELL",
+                    symbol=symbol,
+                    volume=scale_in_volume,
+                    price=0.0,  # Market price
+                    stop_loss=new_stop,
+                    take_profit=take_profit,
+                    strategy=strategy_name,
+                    message=f"Scaling in to profitable position: {scale_in_volume} lots of {symbol} at market"
+                )
+
+                try:
+                    # Place the scale-in order
+                    order_result = self.connector.place_order(
+                        order_type=direction,
+                        symbol=symbol,
+                        volume=scale_in_volume,
+                        price=0.0,  # Market price
+                        stop_loss=new_stop,
+                        take_profit=take_profit,
+                        comment=comment
+                    )
+
+                    # Log execution
+                    DBLogger.log_order_execution(
+                        execution_type="OPENED",
+                        symbol=symbol,
+                        volume=scale_in_volume,
+                        price=order_result['price'],
+                        ticket=order_result['ticket'],
+                        strategy=strategy_name,
+                        message=f"Scaled in to {symbol} position: {scale_in_volume} lots at ${order_result['price']:.2f}, "
+                                f"stop at ${new_stop:.2f} (breakeven or better), target at ${take_profit:.2f}"
+                    )
+
+                    scaled_count += 1
+
+                except Exception as e:
+                    DBLogger.log_error("OrderManager", f"Error scaling in to {symbol} position", exception=e)
+                    continue
+
+        return scaled_count
+
+    def _extract_signal_id_from_comment(self, comment):
+        """Extract signal ID from a position comment.
+
+        Args:
+            comment (str): Position comment
+
+        Returns:
+            int: Signal ID or None if not found
+        """
+        if not comment:
+            return None
+
+        parts = comment.split('_')
+        if len(parts) >= 2 and parts[0] == "Signal":
+            try:
+                return int(parts[1])
+            except ValueError:
+                return None
+        return None
+
+    def _extract_strategy_name_from_comment(self, comment):
+        """Extract strategy name from a position comment.
+
+        Args:
+            comment (str): Position comment
+
+        Returns:
+            str: Strategy name or None if not found
+        """
+        if not comment:
+            return None
+
+        parts = comment.split('_')
+        if len(parts) >= 3 and parts[0] == "Signal":
+            # Handle both formats: Signal_ID_Strategy or Signal_ID_Strategy_PartX
+            return parts[2]
+        return None

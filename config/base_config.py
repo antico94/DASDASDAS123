@@ -77,13 +77,6 @@ class BaseConfig:
         "XAUUSD": {
             "min_stop_distance_points": 3.0,  # Example: Minimum stop loss distance in points (e.g., $3 / 0.01 = 300 points) - ADJUST AS NEEDED
             "max_stop_distance_points": 6500.0 # Example: Maximum stop loss distance in points (e.g., $65 / 0.01 = 6500 points) - ADJUST AS NEEDED
-             # Note: 64.1 price difference is 6410 points if point is 0.01. Previous 64.1 seems to be price difference, not points.
-             # Re-checking logs: "Stop loss distance (64.09999999999991) is too large for XAUUSD"
-             # If point is 0.01, then 64.1 price difference is 6410 points.
-             # The previous hardcoded limit was 50.0. Was this 50.0 points or $50 price difference?
-             # Let's assume it was $50 price difference, which is 5000 points for XAUUSD.
-             # Let's set the default here to accommodate the ~64.1 price difference, so 65.0 price difference = 6500 points.
-             # YOU MUST VERIFY what your intended limits are in POINTS based on your broker's point size.
         },
         # Add risk parameters for other symbols here if needed
         # "EURUSD": {
