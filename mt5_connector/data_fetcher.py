@@ -224,39 +224,41 @@ class MT5DataFetcher:
 
         return synced_count
 
-    def get_latest_data_to_dataframe(self, symbol, timeframe, count=100):
-        """Get the latest OHLC data as a pandas DataFrame.
+    def get_latest_data_to_dataframe(self, symbol, timeframe, count=300):
+        """Get the latest OHLC data as a pandas DataFrame."""
+        # Fetch data using a new session
+        session = DatabaseSession.get_session()
+        try:
+            # Fetch data and immediately detach from session
+            ohlc_data = session.query(OHLCData).filter(
+                OHLCData.symbol == symbol,
+                OHLCData.timeframe == timeframe
+            ).order_by(OHLCData.timestamp.desc()).limit(count).all()
 
-        Args:
-            symbol (str): Symbol name
-            timeframe (str): Timeframe (e.g., 'M5', 'H1')
-            count (int, optional): Number of candles. Defaults to 100.
+            # Detach all objects from the session
+            for obj in ohlc_data:
+                session.expunge(obj)
 
-        Returns:
-            pandas.DataFrame: OHLC data as DataFrame
-        """
-        # Fetch data
-        ohlc_data = self.get_ohlc_data(symbol, timeframe, count)
+            # Convert to Pandas DataFrame
+            df = pd.DataFrame([
+                {
+                    'timestamp': candle.timestamp,
+                    'open': float(candle.open),
+                    'high': float(candle.high),
+                    'low': float(candle.low),
+                    'close': float(candle.close),
+                    'volume': float(candle.volume),
+                    'tick_volume': int(candle.tick_volume),
+                    'spread': int(candle.spread)
+                }
+                for candle in ohlc_data
+            ])
 
-        # Convert to Pandas DataFrame
-        df = pd.DataFrame([
-            {
-                'timestamp': candle.timestamp,
-                'open': candle.open,
-                'high': candle.high,
-                'low': candle.low,
-                'close': candle.close,
-                'volume': candle.volume,
-                # mt5_connector/data_fetcher.py (continued)
-                'tick_volume': candle.tick_volume,
-                'spread': candle.spread
-            }
-            for candle in ohlc_data
-        ])
+            # Set timestamp as index
+            if not df.empty:
+                df.set_index('timestamp', inplace=True)
+                df.sort_index(inplace=True)
 
-        # Set timestamp as index
-        if not df.empty:
-            df.set_index('timestamp', inplace=True)
-            df.sort_index(inplace=True)
-
-        return df
+            return df
+        finally:
+            session.close()

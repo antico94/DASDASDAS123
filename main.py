@@ -14,6 +14,7 @@ from db_logger.setup import initialize_logging
 from db_logger.logging_setup import setup_logging
 from db_logger.db_logger import DBLogger
 
+
 # Global flag for the main loop
 running = True
 
@@ -204,150 +205,197 @@ def take_account_snapshot(connector, account_repo):
 
 
 def run_strategies(enabled_strategies, container, signal_repo, simulation_mode=False):
-    """Run all enabled trading strategies.
+    """Run all enabled trading strategies within a database session.
+
+    This ensures that StrategySignal objects are managed by an active session
+    when their attributes are accessed. Data needed after the session is closed
+    is extracted within the session scope.
 
     Args:
         enabled_strategies (list): List of enabled strategy names
         container: The dependency injection container
-        signal_repo: The signal repository
+        signal_repo: The signal repository (consider if this still needs to manage sessions internally or can use the passed session)
         simulation_mode (bool): Whether to run in simulation mode
 
     Returns:
         int: Number of signals generated
     """
+    generated_signals = []
+    # New lists to store the extracted data (signal type and symbol)
+    # These will hold simple Python strings, safe to access after the session closes.
+    signal_types_for_log = []
+    symbols_for_log = []
+
+    logging.info("Running strategies...")
+    DBLogger.log_event("INFO", "Running strategies", "strategies")
+
     try:
-        generated_signals = []
+        # Use a session context manager for the core database operations.
+        # All interactions requiring StrategySignal objects to be 'bound'
+        # should happen within this block.
+        with DatabaseSession.get_session() as session: # Adjust if using session_scope
+            # Ensure any repository methods called within this block use this 'session' instance.
 
-        # Run Moving Average strategy if enabled
-        if "moving_average" in enabled_strategies:
-            ma_strategy = container.moving_average_strategy()
-            signals = ma_strategy.generate_signals()
+            # Run Moving Average strategy if enabled
+            if "moving_average" in enabled_strategies:
+                logging.debug("Running Moving Average strategy")
+                ma_strategy = container.moving_average_strategy()
+                signals = ma_strategy.generate_signals() # Returns StrategySignal objects
 
-            # Save signals to database
-            for signal in signals:
-                if simulation_mode:
-                    signal.comment = "SIMULATION_MODE"
-                signal_repo.add(signal)
-                generated_signals.append(signal)
+                # Process and save signals within the active session scope
+                for signal in signals:
+                    # Add the signal object to the current session.
+                    session.add(signal)
 
-                # Log the signal to events table
-                signal_data = {
-                    "strategy": "moving_average",
-                    "symbol": signal.symbol,
-                    "signal_type": signal.signal_type,
-                    "price": signal.price,
-                    "strength": signal.strength
-                }
-                DBLogger.log_event("SIGNAL",
-                                   f"Generated {signal.signal_type} signal for {signal.symbol} at {signal.price}",
-                                   "moving_average", signal_data)
+                    if simulation_mode:
+                        signal.comment = "SIMULATION_MODE"
 
-        # Run Breakout strategy if enabled
-        if "breakout" in enabled_strategies:
-            breakout_strategy = container.breakout_strategy()
-            signals = breakout_strategy.generate_signals()
+                    generated_signals.append(signal) # Keep the SQLAlchemy object reference
 
-            # Save signals to database
-            for signal in signals:
-                if simulation_mode:
-                    signal.comment = "SIMULATION_MODE"
-                signal_repo.add(signal)
-                generated_signals.append(signal)
+                    # Extract data needed for logging *while signal is bound to session*
+                    signal_types_for_log.append(signal.signal_type) # <-- Extract data here
+                    symbols_for_log.append(signal.symbol)       # <-- Extract data here
 
-                # Log the signal to events table
-                signal_data = {
-                    "strategy": "breakout",
-                    "symbol": signal.symbol,
-                    "signal_type": signal.signal_type,
-                    "price": signal.price,
-                    "strength": signal.strength
-                }
-                DBLogger.log_event("SIGNAL",
-                                   f"Generated {signal.signal_type} signal for {signal.symbol} at {signal.price}",
-                                   "breakout", signal_data)
+                    # Log the signal to events table. Accessing attributes here is safe.
+                    signal_data = {
+                        "strategy": "moving_average",
+                        "symbol": signal.symbol,
+                        "signal_type": signal.signal_type,
+                        "price": signal.price,
+                        "strength": signal.strength
+                    }
+                    DBLogger.log_event("SIGNAL",
+                                       f"Generated {signal.signal_type} signal for {signal.symbol} at {signal.price}",
+                                       "moving_average", signal_data)
+                logging.debug(f"Processed {len(signals)} signals from Moving Average strategy")
 
-        # Run Range-Bound strategy if enabled
-        if "range_bound" in enabled_strategies:
-            range_bound_strategy = container.range_bound_strategy()
-            signals = range_bound_strategy.generate_signals()
 
-            # Save signals to database
-            for signal in signals:
-                if simulation_mode:
-                    signal.comment = "SIMULATION_MODE"
-                signal_repo.add(signal)
-                generated_signals.append(signal)
+            # Run Breakout strategy if enabled
+            if "breakout" in enabled_strategies:
+                logging.debug("Running Breakout strategy")
+                breakout_strategy = container.breakout_strategy()
+                signals = breakout_strategy.generate_signals()
+                for signal in signals:
+                    session.add(signal)
+                    if simulation_mode:
+                        signal.comment = "SIMULATION_MODE"
+                    generated_signals.append(signal)
+                    # Extract data needed for logging *while signal is bound to session*
+                    signal_types_for_log.append(signal.signal_type) # <-- Extract data here
+                    symbols_for_log.append(signal.symbol)       # <-- Extract data here
+                    signal_data = {
+                        "strategy": "breakout",
+                        "symbol": signal.symbol,
+                        "signal_type": signal.signal_type,
+                        "price": signal.price,
+                        "strength": signal.strength
+                    }
+                    DBLogger.log_event("SIGNAL",
+                                       f"Generated {signal.signal_type} signal for {signal.symbol} at {signal.price}",
+                                       "breakout", signal_data)
+                logging.debug(f"Processed {len(signals)} signals from Breakout strategy")
 
-                # Log the signal to events table
-                signal_data = {
-                    "strategy": "range_bound",
-                    "symbol": signal.symbol,
-                    "signal_type": signal.signal_type,
-                    "price": signal.price,
-                    "strength": signal.strength
-                }
-                DBLogger.log_event("SIGNAL",
-                                   f"Generated {signal.signal_type} signal for {signal.symbol} at {signal.price}",
-                                   "range_bound", signal_data)
 
-        # Run Momentum Scalping strategy if enabled
-        if "momentum_scalping" in enabled_strategies:
-            momentum_strategy = container.momentum_scalping_strategy()
-            signals = momentum_strategy.generate_signals()
+            # Run Range-Bound strategy if enabled
+            if "range_bound" in enabled_strategies:
+                logging.debug("Running Range-Bound strategy")
+                range_bound_strategy = container.range_bound_strategy()
+                signals = range_bound_strategy.generate_signals()
+                for signal in signals:
+                    session.add(signal)
+                    if simulation_mode:
+                        signal.comment = "SIMULATION_MODE"
+                    generated_signals.append(signal)
+                    # Extract data needed for logging *while signal is bound to session*
+                    signal_types_for_log.append(signal.signal_type) # <-- Extract data here
+                    symbols_for_log.append(signal.symbol)       # <-- Extract data here
+                    signal_data = {
+                        "strategy": "range_bound",
+                        "symbol": signal.symbol,
+                        "signal_type": signal.signal_type,
+                        "price": signal.price,
+                        "strength": signal.strength
+                    }
+                    DBLogger.log_event("SIGNAL",
+                                       f"Generated {signal.signal_type} signal for {signal.symbol} at {signal.price}",
+                                       "range_bound", signal_data)
+                logging.debug(f"Processed {len(signals)} signals from Range-Bound strategy")
 
-            # Save signals to database
-            for signal in signals:
-                if simulation_mode:
-                    signal.comment = "SIMULATION_MODE"
-                signal_repo.add(signal)
-                generated_signals.append(signal)
 
-                # Log the signal to events table
-                signal_data = {
-                    "strategy": "momentum_scalping",
-                    "symbol": signal.symbol,
-                    "signal_type": signal.signal_type,
-                    "price": signal.price,
-                    "strength": signal.strength
-                }
-                DBLogger.log_event("SIGNAL",
-                                   f"Generated {signal.signal_type} signal for {signal.symbol} at {signal.price}",
-                                   "momentum_scalping", signal_data)
+            # Run Momentum Scalping strategy if enabled
+            if "momentum_scalping" in enabled_strategies:
+                logging.debug("Running Momentum Scalping strategy")
+                momentum_strategy = container.momentum_scalping_strategy()
+                signals = momentum_strategy.generate_signals()
+                for signal in signals:
+                    session.add(signal)
+                    if simulation_mode:
+                        signal.comment = "SIMULATION_MODE"
+                    generated_signals.append(signal)
+                    # Extract data needed for logging *while signal is bound to session*
+                    signal_types_for_log.append(signal.signal_type) # <-- Extract data here
+                    symbols_for_log.append(signal.symbol)       # <-- Extract data here
+                    signal_data = {
+                        "strategy": "momentum_scalping",
+                        "symbol": signal.symbol,
+                        "signal_type": signal.signal_type,
+                        "price": signal.price,
+                        "strength": signal.strength
+                    }
+                    DBLogger.log_event("SIGNAL",
+                                       f"Generated {signal.signal_type} signal for {signal.symbol} at {signal.price}",
+                                       "momentum_scalping", signal_data)
+                logging.debug(f"Processed {len(signals)} signals from Momentum Scalping strategy")
 
-        # Run Ichimoku strategy if enabled
-        if "ichimoku" in enabled_strategies:
-            ichimoku_strategy = container.ichimoku_strategy()
-            signals = ichimoku_strategy.generate_signals()
 
-            # Save signals to database
-            for signal in signals:
-                if simulation_mode:
-                    signal.comment = "SIMULATION_MODE"
-                signal_repo.add(signal)
-                generated_signals.append(signal)
+            # Run Ichimoku strategy if enabled
+            if "ichimoku" in enabled_strategies:
+                logging.debug("Running Ichimoku strategy")
+                ichimoku_strategy = container.ichimoku_strategy()
+                signals = ichimoku_strategy.generate_signals()
+                for signal in signals:
+                    session.add(signal)
+                    if simulation_mode:
+                        signal.comment = "SIMULATION_MODE"
+                    generated_signals.append(signal)
+                    # Extract data needed for logging *while signal is bound to session*
+                    signal_types_for_log.append(signal.signal_type) # <-- Extract data here
+                    symbols_for_log.append(signal.symbol)       # <-- Extract data here
+                    signal_data = {
+                        "strategy": "ichimoku",
+                        "symbol": signal.symbol,
+                        "signal_type": signal.signal_type,
+                        "price": signal.price,
+                        "strength": signal.strength
+                    }
+                    DBLogger.log_event("SIGNAL",
+                                       f"Generated {signal.signal_type} signal for {signal.symbol} at {signal.price}",
+                                       "ichimoku", signal_data)
+                logging.debug(f"Processed {len(signals)} signals from Ichimoku strategy")
 
-                # Log the signal to events table
-                signal_data = {
-                    "strategy": "ichimoku",
-                    "symbol": signal.symbol,
-                    "signal_type": signal.signal_type,
-                    "price": signal.price,
-                    "strength": signal.strength
-                }
-                DBLogger.log_event("SIGNAL",
-                                   f"Generated {signal.signal_type} signal for {signal.symbol} at {signal.price}",
-                                   "ichimoku", signal_data)
+            # The 'with' block will automatically commit the session here if no exceptions occurred,
+            # and then close the session.
+            # Objects in generated_signals become detached after this point.
+
+
+        # --- Code Execution Continues Here AFTER the session is closed ---
 
         if generated_signals:
-            signal_types = [s.signal_type for s in generated_signals]
-            logging.info(f"Generated {len(generated_signals)} signals: {signal_types}")
-            DBLogger.log_event("INFO", f"Generated {len(generated_signals)} signals: {signal_types}", "strategies")
+            # Use the lists containing extracted data for logging,
+            # as the objects in generated_signals are now detached.
+            logging.info(f"Generated {len(generated_signals)} signals: {signal_types_for_log} for symbols {symbols_for_log}")
+            # Use the extracted lists for the DBLogger event as well
+            DBLogger.log_event("INFO", f"Generated {len(generated_signals)} signals", "strategies", {"signal_types": signal_types_for_log, "symbols": symbols_for_log})
+
 
     except Exception as e:
-        logging.error(f"Error running strategies: {str(e)}")
+        # The session context manager should handle rollback on exception.
+        logging.error(f"Error running strategies: {str(e)}", exc_info=True) # Log traceback
         DBLogger.log_error("strategies", "Error running strategies", exception=e)
         return 0
 
+    logging.info("Finished running strategies.")
+    DBLogger.log_event("INFO", "Finished running strategies", "strategies")
     return len(generated_signals)
 
 

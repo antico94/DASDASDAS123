@@ -21,7 +21,7 @@ class RiskValidator:
         self.connector = connector or MT5Connector()
         self.trade_repository = trade_repository or TradeRepository()
         self.account_repository = account_repository or AccountSnapshotRepository()
-
+        self.risk_params = getattr(Config, 'RISK_PARAMS', {})  # U
         self.max_positions = Config.MAX_POSITIONS
         self.max_daily_risk_percent = Config.MAX_DAILY_RISK_PERCENT
         self.max_drawdown_percent = Config.MAX_DRAWDOWN_PERCENT
@@ -191,7 +191,7 @@ class RiskValidator:
             return 0  # Return a safe default value
 
     def validate_stop_loss(self, symbol, order_type, entry_price, stop_loss_price):
-        """Validate that a stop loss is properly set and reasonable.
+        """Validate that a stop loss is properly set and reasonable against configured limits.
 
         Args:
             symbol (str): Symbol to trade
@@ -220,54 +220,83 @@ class RiskValidator:
             return False
 
         try:
-            # Get symbol info
+            # Get symbol info (needed for point size if converting points/pips)
             symbol_info = self.connector.get_symbol_info(symbol)
             if symbol_info is None:
                 DBLogger.log_event("WARNING", f"Failed to get symbol info for {symbol}", "RiskValidator")
                 return False
 
-            # Check that stop loss exists
+            # Get symbol-specific risk parameters from configuration
+            symbol_risk_config = self.risk_params.get(symbol)
+
+            if not symbol_risk_config:
+                 DBLogger.log_event("WARNING", f"No risk parameters configured for symbol {symbol} in Config.RISK_PARAMS. Validation failed.", "RiskValidator")
+                 # If no configuration, validation should fail for safety.
+                 return False
+
+
+            # Check that stop loss exists (redundant check since price > 0, but harmless)
             if stop_loss_price <= 0:
-                DBLogger.log_event("WARNING", f"No stop loss set for {symbol} trade", "RiskValidator")
+                DBLogger.log_event("WARNING", f"Stop loss price is zero or negative for {symbol}", "RiskValidator")
                 return False
 
             # Check stop loss direction
             if order_type == 0:  # Buy
                 if stop_loss_price >= entry_price:
                     DBLogger.log_event("WARNING",
-                        f"Stop loss ({stop_loss_price}) is above entry price ({entry_price}) for BUY order",
+                        f"Stop loss ({stop_loss_price}) is above entry price ({entry_price}) for BUY order on {symbol}",
                         "RiskValidator")
                     return False
             else:  # Sell
                 if stop_loss_price <= entry_price:
                     DBLogger.log_event("WARNING",
-                        f"Stop loss ({stop_loss_price}) is below entry price ({entry_price}) for SELL order",
+                        f"Stop loss ({stop_loss_price}) is below entry price ({entry_price}) for SELL order on {symbol}",
                         "RiskValidator")
                     return False
 
-            # Calculate stop loss distance
+            # Calculate stop loss distance in points
             stop_distance = abs(entry_price - stop_loss_price)
-            price_point = symbol_info.get('point', 0.01)  # Default to 0.01 if not found
+            # The point size for Gold is usually 0.01, but let's fetch it
+            price_point = symbol_info.get('point', 0.01)
+            if price_point <= 0: # Prevent division by zero
+                 DBLogger.log_event("WARNING", f"Invalid point size ({price_point}) for symbol {symbol}. Cannot validate stop loss distance in points.", "RiskValidator")
+                 # Decide if you want to fail validation or use price difference check only
+                 # Failing is safer
+                 return False
 
-            # For gold, check if stop is too tight
-            if symbol == "XAUUSD":
-                # Minimum stop distance for gold (e.g., $3)
-                min_distance = 3.0
-                if stop_distance < min_distance:
-                    DBLogger.log_event("WARNING", f"Stop loss distance ({stop_distance}) is too small for {symbol}", "RiskValidator")
-                    return False
+            stop_distance_points = stop_distance / price_point
 
-                # Maximum stop distance for gold (e.g., $50)
-                max_distance = 50.0
-                if stop_distance > max_distance:
-                    DBLogger.log_event("WARNING", f"Stop loss distance ({stop_distance}) is too large for {symbol}", "RiskValidator")
-                    return False
 
+            # Validate distance against configured limits (in points)
+            min_distance_points = symbol_risk_config.get("min_stop_distance_points")
+            max_distance_points = symbol_risk_config.get("max_stop_distance_points")
+
+            # Check if min/max limits are actually configured
+            if min_distance_points is None and max_distance_points is None:
+                 DBLogger.log_event("WARNING", f"No min_stop_distance_points or max_stop_distance_points configured for {symbol}. Validation passed by default.", "RiskValidator")
+                 # Decide if this should pass or fail if limits aren't explicitly set.
+                 # Passing might be acceptable if you only rely on strategy logic.
+                 return True # Assuming passing is ok if limits aren't set
+
+            if min_distance_points is not None:
+                 if stop_distance_points < min_distance_points:
+                     DBLogger.log_event("WARNING", f"Stop loss distance ({stop_distance_points:.2f} pts) is too small for {symbol} (Min: {min_distance_points} pts)", "RiskValidator")
+                     return False
+
+            if max_distance_points is not None:
+                 if stop_distance_points > max_distance_points: # Check against configured max
+                     DBLogger.log_event("WARNING", f"Stop loss distance ({stop_distance_points:.2f} pts) is too large for {symbol} (Max: {max_distance_points} pts)", "RiskValidator")
+                     return False
+
+
+            # If all checks pass
             DBLogger.log_event("DEBUG",
-                f"Stop loss validation passed: {order_type}, entry={entry_price}, stop={stop_loss_price}",
+                f"Stop loss validation passed for {symbol}: type={order_type}, entry={entry_price}, stop={stop_loss_price} ({stop_distance_points:.2f} pts)",
                 "RiskValidator")
             return True
 
         except Exception as e:
-            DBLogger.log_error("RiskValidator", f"Error validating stop loss", exception=e)
+            import traceback
+            trace = traceback.format_exc()
+            DBLogger.log_error("RiskValidator", f"Error validating stop loss for {symbol}", exception=e)
             return False

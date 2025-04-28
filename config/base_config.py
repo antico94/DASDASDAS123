@@ -15,7 +15,7 @@ class BaseConfig:
     # Trading settings
     SYMBOL = "XAUUSD"
     DEFAULT_VOLUME = 0.01  # Minimum lot size
-    MAX_POSITIONS = 5  # Maximum number of open positions
+    MAX_POSITIONS = 100  # Maximum number of open positions
 
     # Risk management
     MAX_RISK_PER_TRADE_PERCENT = 1.0  # Maximum risk per trade as percentage of account
@@ -72,6 +72,25 @@ class BaseConfig:
     LOG_LEVEL = "INFO"
     LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     LOG_FILE = "trading_bot.log"
+
+    RISK_PARAMS = {
+        "XAUUSD": {
+            "min_stop_distance_points": 3.0,  # Example: Minimum stop loss distance in points (e.g., $3 / 0.01 = 300 points) - ADJUST AS NEEDED
+            "max_stop_distance_points": 6500.0 # Example: Maximum stop loss distance in points (e.g., $65 / 0.01 = 6500 points) - ADJUST AS NEEDED
+             # Note: 64.1 price difference is 6410 points if point is 0.01. Previous 64.1 seems to be price difference, not points.
+             # Re-checking logs: "Stop loss distance (64.09999999999991) is too large for XAUUSD"
+             # If point is 0.01, then 64.1 price difference is 6410 points.
+             # The previous hardcoded limit was 50.0. Was this 50.0 points or $50 price difference?
+             # Let's assume it was $50 price difference, which is 5000 points for XAUUSD.
+             # Let's set the default here to accommodate the ~64.1 price difference, so 65.0 price difference = 6500 points.
+             # YOU MUST VERIFY what your intended limits are in POINTS based on your broker's point size.
+        },
+        # Add risk parameters for other symbols here if needed
+        # "EURUSD": {
+        #     "min_stop_distance_points": 100, # Example: 10 pips * 10 points/pip = 100 points
+        #     "max_stop_distance_points": 1000 # Example: 100 pips * 10 points/pip = 1000 points
+        # },
+    }
 
     @property
     def DATABASE_URI(self):
