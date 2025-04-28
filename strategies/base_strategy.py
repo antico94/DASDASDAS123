@@ -2,7 +2,7 @@
 from abc import ABC, abstractmethod
 import pandas as pd
 from datetime import datetime
-from custom_logging.logger import app_logger
+from db_logger.db_logger import DBLogger
 from data.models import StrategySignal
 from mt5_connector.data_fetcher import MT5DataFetcher
 
@@ -24,9 +24,8 @@ class BaseStrategy(ABC):
         self.name = name or self.__class__.__name__
         self.data_fetcher = data_fetcher or MT5DataFetcher()
 
-        # Set up logging
-        self.logger = app_logger
-        self.logger.info(f"Initialized strategy: {self.name} for {self.symbol} {self.timeframe}")
+        # Log initialization
+        DBLogger.log_event("INFO", f"Initialized strategy: {self.name} for {self.symbol} {self.timeframe}", "Strategy")
 
     @abstractmethod
     def analyze(self, data):
@@ -68,28 +67,28 @@ class BaseStrategy(ABC):
             data = self.get_ohlc_data()
 
             if data.empty:
-                self.logger.warning(f"No data available for {self.symbol} {self.timeframe}")
+                DBLogger.log_event("WARNING", f"No data available for {self.symbol} {self.timeframe}", "Strategy")
                 return []
 
             # Log data summary
-            self.logger.debug(f"Analyzing {len(data)} candles for {self.symbol} {self.timeframe}")
-            self.logger.debug(f"Data range: {data.index.min()} to {data.index.max()}")
+            DBLogger.log_event("DEBUG", f"Analyzing {len(data)} candles for {self.symbol} {self.timeframe}", "Strategy")
+            DBLogger.log_event("DEBUG", f"Data range: {data.index.min()} to {data.index.max()}", "Strategy")
 
             # Call the strategy's analysis method
             signals = self.analyze(data)
 
             # Log generated signals
             if signals:
-                self.logger.info(f"Generated {len(signals)} signals for {self.symbol} {self.timeframe}")
+                DBLogger.log_event("INFO", f"Generated {len(signals)} signals for {self.symbol} {self.timeframe}", "Strategy")
                 for signal in signals:
-                    self.logger.info(f"Signal: {signal.signal_type} at {signal.price}")
+                    DBLogger.log_event("INFO", f"Signal: {signal.signal_type} at {signal.price}", "Strategy")
             else:
-                self.logger.debug(f"No signals generated for {self.symbol} {self.timeframe}")
+                DBLogger.log_event("DEBUG", f"No signals generated for {self.symbol} {self.timeframe}", "Strategy")
 
             return signals
 
         except Exception as e:
-            self.logger.error(f"Error generating signals for {self.name}: {str(e)}")
+            DBLogger.log_error("Strategy", f"Error generating signals for {self.name}", exception=e)
             return []
 
     def create_signal(self, signal_type, price, strength=0.5, metadata=None):
@@ -108,13 +107,19 @@ class BaseStrategy(ABC):
 
         # Validate inputs
         if signal_type not in ['BUY', 'SELL', 'CLOSE', 'CANCEL']:
-            raise ValueError(f"Invalid signal type: {signal_type}")
+            error_msg = f"Invalid signal type: {signal_type}"
+            DBLogger.log_error("Strategy", error_msg)
+            raise ValueError(error_msg)
 
         if not isinstance(price, (int, float)) or price <= 0:
+            error_msg = f"Invalid price: {price}"
+            DBLogger.log_error("Strategy", error_msg)
             raise ValueError(f"Invalid price: {price}")
 
         if not (0 <= strength <= 1):
-            raise ValueError(f"Invalid strength: {strength}. Must be between 0 and 1.")
+            error_msg = f"Invalid strength: {strength}. Must be between 0 and 1."
+            DBLogger.log_error("Strategy", error_msg)
+            raise ValueError(error_msg)
 
         # Convert NumPy values to native Python types for JSON serialization
         processed_metadata = {}
@@ -138,5 +143,10 @@ class BaseStrategy(ABC):
             strength=float(strength) if hasattr(strength, 'item') else strength,
             signal_data=json.dumps(processed_metadata or {})  # Use signal_data to match model field
         )
+
+        # Log signal creation
+        DBLogger.log_event("DEBUG",
+            f"Created {signal_type} signal for {self.symbol} at {price} with strength {strength}",
+            "Strategy")
 
         return signal

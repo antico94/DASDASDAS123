@@ -31,12 +31,12 @@ class BaseRepository:
             session = DatabaseSession.get_session()
             session.add(item)
             session.commit()
-            DBLogger.log_event("DEBUG", f"Added {self.model_class.__name__} to database: {item}", "repository")
+            DBLogger.log_event("DEBUG", f"Added {self.model_class.__name__} to database: {item}", "Repository")
             return item
         except Exception as e:
             if session:
                 session.rollback()
-            DBLogger.log_error("repository", f"Error adding {self.model_class.__name__}", exception=e)
+            DBLogger.log_error("Repository", f"Error adding {self.model_class.__name__}", exception=e)
             raise
         finally:
             if session:
@@ -56,12 +56,12 @@ class BaseRepository:
             session = DatabaseSession.get_session()
             session.merge(item)
             session.commit()
-            DBLogger.log_event("DEBUG", f"Updated {self.model_class.__name__} in database: {item}", "repository")
+            DBLogger.log_event("DEBUG", f"Updated {self.model_class.__name__} in database: {item}", "Repository")
             return item
         except Exception as e:
             if session:
                 session.rollback()
-            DBLogger.log_error("repository", f"Error updating {self.model_class.__name__}", exception=e)
+            DBLogger.log_error("Repository", f"Error updating {self.model_class.__name__}", exception=e)
             raise
         finally:
             if session:
@@ -84,13 +84,13 @@ class BaseRepository:
                 session.delete(item)
                 session.commit()
                 DBLogger.log_event("DEBUG", f"Deleted {self.model_class.__name__} from database: ID {item_id}",
-                                   "repository")
+                               "Repository")
                 return True
             return False
         except Exception as e:
             if session:
                 session.rollback()
-            DBLogger.log_error("repository", f"Error deleting {self.model_class.__name__}", exception=e)
+            DBLogger.log_error("Repository", f"Error deleting {self.model_class.__name__}", exception=e)
             raise
         finally:
             if session:
@@ -111,7 +111,7 @@ class BaseRepository:
             item = session.query(self.model_class).filter(self.model_class.id == item_id).first()
             return item
         except Exception as e:
-            DBLogger.log_error("repository", f"Error getting {self.model_class.__name__} by ID", exception=e)
+            DBLogger.log_error("Repository", f"Error getting {self.model_class.__name__} by ID", exception=e)
             raise
         finally:
             if session:
@@ -134,7 +134,7 @@ class BaseRepository:
                 query = query.limit(limit)
             return query.all()
         except Exception as e:
-            DBLogger.log_error("repository", f"Error getting all {self.model_class.__name__}s", exception=e)
+            DBLogger.log_error("Repository", f"Error getting all {self.model_class.__name__}s", exception=e)
             raise
         finally:
             if session:
@@ -185,7 +185,7 @@ class OHLCDataRepository(BaseRepository):
         except Exception as e:
             if session:
                 session.rollback()
-            DBLogger.log_error("repository", "Error adding or updating OHLC data", exception=e)
+            DBLogger.log_error("Repository", "Error adding or updating OHLC data", exception=e)
             raise
         finally:
             if session:
@@ -213,7 +213,7 @@ class OHLCDataRepository(BaseRepository):
             # Convert to list and reverse to get chronological order
             return list(reversed(candles))
         except Exception as e:
-            DBLogger.log_error("repository", "Error getting latest candles", exception=e)
+            DBLogger.log_error("Repository", "Error getting latest candles", exception=e)
             raise
         finally:
             if session:
@@ -246,7 +246,7 @@ class OHLCDataRepository(BaseRepository):
 
             return candles
         except Exception as e:
-            DBLogger.log_error("repository", "Error getting candles range", exception=e)
+            DBLogger.log_error("Repository", "Error getting candles range", exception=e)
             raise
         finally:
             if session:
@@ -283,7 +283,7 @@ class StrategySignalRepository(BaseRepository):
 
             return query.limit(limit).all()
         except Exception as e:
-            DBLogger.log_error("repository", "Error getting recent signals", exception=e)
+            DBLogger.log_error("Repository", "Error getting recent signals", exception=e)
             raise
         finally:
             if session:
@@ -310,7 +310,7 @@ class StrategySignalRepository(BaseRepository):
 
             return query.all()
         except Exception as e:
-            DBLogger.log_error("repository", "Error getting pending signals", exception=e)
+            DBLogger.log_error("Repository", "Error getting pending signals", exception=e)
             raise
         finally:
             if session:
@@ -335,13 +335,13 @@ class StrategySignalRepository(BaseRepository):
             if signal:
                 signal.is_executed = True
                 session.commit()
-                DBLogger.log_event("DEBUG", f"Marked signal {signal_id} as executed", "repository")
+                DBLogger.log_event("DEBUG", f"Marked signal {signal_id} as executed", "Repository")
                 return signal
             return None
         except Exception as e:
             if session:
                 session.rollback()
-            DBLogger.log_error("repository", "Error marking signal as executed", exception=e)
+            DBLogger.log_error("Repository", "Error marking signal as executed", exception=e)
             raise
         finally:
             if session:
@@ -377,7 +377,7 @@ class TradeRepository(BaseRepository):
 
             return query.all()
         except Exception as e:
-            DBLogger.log_error("repository", "Error getting open trades", exception=e)
+            DBLogger.log_error("Repository", "Error getting open trades", exception=e)
             raise
         finally:
             if session:
@@ -410,7 +410,7 @@ class TradeRepository(BaseRepository):
 
             return query.order_by(Trade.open_time).all()
         except Exception as e:
-            DBLogger.log_error("repository", "Error getting trades by date range", exception=e)
+            DBLogger.log_error("Repository", "Error getting trades by date range", exception=e)
             raise
         finally:
             if session:
@@ -475,7 +475,7 @@ class TradeRepository(BaseRepository):
                 'best_trade': result.best_trade or 0
             }
         except Exception as e:
-            DBLogger.log_error("repository", "Error getting trade performance", exception=e)
+            DBLogger.log_error("Repository", "Error getting trade performance", exception=e)
             raise
         finally:
             if session:
@@ -501,7 +501,7 @@ class AccountSnapshotRepository(BaseRepository):
                 desc(AccountSnapshot.timestamp)
             ).first()
         except Exception as e:
-            DBLogger.log_error("repository", "Error getting latest snapshot", exception=e)
+            DBLogger.log_error("Repository", "Error getting latest snapshot", exception=e)
             raise
         finally:
             if session:
@@ -530,7 +530,7 @@ class AccountSnapshotRepository(BaseRepository):
 
             return snapshots
         except Exception as e:
-            DBLogger.log_error("repository", "Error getting account snapshots range", exception=e)
+            DBLogger.log_error("Repository", "Error getting account snapshots range", exception=e)
             raise
         finally:
             if session:
@@ -573,7 +573,7 @@ class AccountSnapshotRepository(BaseRepository):
 
             return snapshots
         except Exception as e:
-            DBLogger.log_error("repository", "Error getting daily account snapshots", exception=e)
+            DBLogger.log_error("Repository", "Error getting daily account snapshots", exception=e)
             raise
         finally:
             if session:

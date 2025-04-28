@@ -30,8 +30,6 @@ class EnhancedOrderManager:
         self.position_sizer = position_sizer or PositionSizer(connector=self.connector)
         self.risk_validator = risk_validator or RiskValidator(connector=self.connector)
 
-        self.logger = app_logger
-
     def process_pending_signals(self):
         """Process all pending trade signals with enhanced trade management.
 
@@ -42,17 +40,17 @@ class EnhancedOrderManager:
         pending_signals = self.signal_repository.get_pending_signals()
 
         if not pending_signals:
-            self.logger.debug("No pending signals to process")
+            DBLogger.log_event("DEBUG", "No pending signals to process", "OrderManager")
             return 0
 
-        self.logger.info(f"Processing {len(pending_signals)} pending signals")
+        DBLogger.log_event("INFO", f"Processing {len(pending_signals)} pending signals", "OrderManager")
 
         processed_count = 0
         for signal in pending_signals:
             try:
                 # Skip signals marked as simulation only
                 if signal.comment == "SIMULATION_MODE":
-                    self.logger.info(f"Skipping signal {signal.id} marked as simulation")
+                    DBLogger.log_event("INFO", f"Skipping signal {signal.id} marked as simulation", "OrderManager")
                     self.signal_repository.mark_as_executed(signal.id)
                     processed_count += 1
                     continue
@@ -65,10 +63,10 @@ class EnhancedOrderManager:
                     self.signal_repository.mark_as_executed(signal.id)
                     processed_count += 1
             except Exception as e:
-                self.logger.error(f"Error processing signal {signal.id}: {str(e)}")
+                DBLogger.log_error("OrderManager", f"Error processing signal {signal.id}", exception=e)
 
         if processed_count > 0:
-            self.logger.info(f"Processed {processed_count} signals")
+            DBLogger.log_event("INFO", f"Processed {processed_count} signals", "OrderManager")
         return processed_count
 
     def _execute_signal(self, signal):
@@ -80,7 +78,7 @@ class EnhancedOrderManager:
         Returns:
             bool: True if executed successfully, False otherwise
         """
-        self.logger.info(f"Executing signal {signal.id}: {signal.signal_type} for {signal.symbol}")
+        DBLogger.log_event("INFO", f"Executing signal {signal.id}: {signal.signal_type} for {signal.symbol}", "OrderManager")
 
         try:
             # Parse metadata
@@ -93,11 +91,11 @@ class EnhancedOrderManager:
                 # Close signal
                 return self._execute_close_signal(signal, metadata)
             else:
-                self.logger.warning(f"Unknown signal type: {signal.signal_type}")
+                DBLogger.log_event("WARNING", f"Unknown signal type: {signal.signal_type}", "OrderManager")
                 return False
 
         except Exception as e:
-            self.logger.error(f"Error executing signal {signal.id}: {str(e)}")
+            DBLogger.log_error("OrderManager", f"Error executing signal {signal.id}", exception=e)
             return False
 
     def _execute_entry_signal(self, signal, metadata):
@@ -112,19 +110,19 @@ class EnhancedOrderManager:
         """
         # Input validation
         if signal is None:
-            self.logger.error("Signal is None")
+            DBLogger.log_error("OrderManager", "Signal is None")
             return False
 
         if signal.signal_type not in ["BUY", "SELL"]:
-            self.logger.error(f"Invalid signal type: {signal.signal_type}")
+            DBLogger.log_error("OrderManager", f"Invalid signal type: {signal.signal_type}")
             return False
 
         if signal.price is None or not isinstance(signal.price, (int, float)) or signal.price <= 0:
-            self.logger.error(f"Invalid signal price: {signal.price}")
+            DBLogger.log_error("OrderManager", f"Invalid signal price: {signal.price}")
             return False
 
         if signal.symbol is None or not isinstance(signal.symbol, str):
-            self.logger.error(f"Invalid symbol: {signal.symbol}")
+            DBLogger.log_error("OrderManager", f"Invalid symbol: {signal.symbol}")
             return False
 
         # Convert signal type to MT5 order type
@@ -133,13 +131,13 @@ class EnhancedOrderManager:
         # Ensure metadata is a dictionary
         if metadata is None:
             metadata = {}
-            self.logger.warning("Metadata is None, using empty dictionary")
+            DBLogger.log_event("WARNING", "Metadata is None, using empty dictionary", "OrderManager")
 
         # Calculate stop loss based on strategy
         stop_loss = self._calculate_strategy_stop_loss(signal, metadata, order_type)
 
         # Log the stop loss calculation
-        self.logger.debug(f"Calculated stop loss: {stop_loss} for {signal.signal_type} signal")
+        DBLogger.log_event("DEBUG", f"Calculated stop loss: {stop_loss} for {signal.signal_type} signal", "OrderManager")
 
         # Validate stop loss
         if not self.risk_validator.validate_stop_loss(
@@ -148,13 +146,13 @@ class EnhancedOrderManager:
                 entry_price=signal.price,
                 stop_loss_price=stop_loss
         ):
-            self.logger.warning(f"Invalid stop loss for signal {signal.id}")
+            DBLogger.log_event("WARNING", f"Invalid stop loss for signal {signal.id}", "OrderManager")
             return False
 
         # Check if we can open a new position based on risk rules
         can_open, reason = self.risk_validator.can_open_new_position(signal.symbol)
         if not can_open:
-            self.logger.warning(f"Risk validation failed: {reason}")
+            DBLogger.log_event("WARNING", f"Risk validation failed: {reason}", "OrderManager")
             return False
 
         # Calculate position size based on risk
@@ -168,7 +166,7 @@ class EnhancedOrderManager:
 
         # Validate position size
         if position_size is None or not self.position_sizer.validate_position_size(signal.symbol, position_size):
-            self.logger.warning(f"Invalid position size calculated: {position_size}")
+            DBLogger.log_event("WARNING", f"Invalid position size calculated: {position_size}", "OrderManager")
             return False
 
         # Calculate take-profit levels based on risk-reward ratios and strategy
@@ -299,15 +297,15 @@ class EnhancedOrderManager:
 
         # Final validation
         if stop_loss <= 0:
-            self.logger.warning(f"Invalid calculated stop loss: {stop_loss}, using fallback")
+            DBLogger.log_event("WARNING", f"Invalid calculated stop loss: {stop_loss}, using fallback", "OrderManager")
             # Fallback: 1% from price
             stop_loss = signal.price * 0.99 if order_type == 0 else signal.price * 1.01
 
         # Log the strategy-specific stop calculation
-        self.logger.debug(
+        DBLogger.log_event("DEBUG",
             f"Calculated {strategy_name} stop loss: {stop_loss} "
-            f"for {signal.signal_type} at {signal.price}"
-        )
+            f"for {signal.signal_type} at {signal.price}",
+            "OrderManager")
 
         return stop_loss
 
@@ -401,10 +399,10 @@ class EnhancedOrderManager:
             tp1 = entry_price - (risk * r1)
             tp2 = entry_price - (risk * r2)
 
-        self.logger.debug(
+        DBLogger.log_event("DEBUG",
             f"Calculated {strategy_name} take-profits: {[tp1, tp2]} "
-            f"(based on risk={risk} with R:R={[r1, r2]})"
-        )
+            f"(based on risk={risk} with R:R={[r1, r2]})",
+            "OrderManager")
 
         return [tp1, tp2]
 
@@ -438,12 +436,24 @@ class EnhancedOrderManager:
             # Ensure minimum lot sizes
             if position_size_1 < min_lot or position_size_2 < min_lot:
                 # Can't split, use single position approach
-                self.logger.warning(
-                    f"Position size too small to split: {position_size}. Using single position."
-                )
+                DBLogger.log_event("WARNING",
+                    f"Position size too small to split: {position_size}. Using single position.",
+                    "OrderManager")
 
                 # Use combined position with first target
                 comment = f"Signal_{signal.id}_{signal.strategy_name}"
+
+                # Log order request
+                DBLogger.log_order_request(
+                    order_type=signal.signal_type,
+                    symbol=signal.symbol,
+                    volume=position_size,
+                    price=0.0,  # Market price
+                    stop_loss=stop_loss,
+                    take_profit=take_profit_levels[0],
+                    strategy=signal.strategy_name,
+                    message=f"Placing {signal.signal_type} order (combined): {position_size} lots of {signal.symbol}"
+                )
 
                 order_result = self.connector.place_order(
                     order_type=order_type,
@@ -470,9 +480,16 @@ class EnhancedOrderManager:
                 )
                 self.trade_repository.add(trade)
 
-                self.logger.info(
-                    f"Executed {signal.signal_type} order: {position_size} lots of {signal.symbol} "
-                    f"at ${order_result['price']:.2f}, SL=${stop_loss:.2f}, TP=${take_profit_levels[0]:.2f}"
+                # Log execution
+                DBLogger.log_order_execution(
+                    execution_type="OPENED",
+                    symbol=signal.symbol,
+                    volume=position_size,
+                    price=order_result['price'],
+                    ticket=order_result['ticket'],
+                    strategy=signal.strategy_name,
+                    message=f"Executed {signal.signal_type} order: {position_size} lots of {signal.symbol} "
+                           f"at ${order_result['price']:.2f}, SL=${stop_loss:.2f}, TP=${take_profit_levels[0]:.2f}"
                 )
 
                 return True
@@ -480,6 +497,18 @@ class EnhancedOrderManager:
             # Execute two-part strategy as per the plan
             # First part with first target
             comment_1 = f"Signal_{signal.id}_{signal.strategy_name}_Part1"
+
+            # Log first order request
+            DBLogger.log_order_request(
+                order_type=signal.signal_type,
+                symbol=signal.symbol,
+                volume=position_size_1,
+                price=0.0,  # Market price
+                stop_loss=stop_loss,
+                take_profit=take_profit_levels[0],
+                strategy=signal.strategy_name,
+                message=f"Placing {signal.signal_type} order (Part 1): {position_size_1} lots of {signal.symbol}"
+            )
 
             order_result_1 = self.connector.place_order(
                 order_type=order_type,
@@ -506,8 +535,31 @@ class EnhancedOrderManager:
             )
             self.trade_repository.add(trade_1)
 
+            # Log first order execution
+            DBLogger.log_order_execution(
+                execution_type="OPENED",
+                symbol=signal.symbol,
+                volume=position_size_1,
+                price=order_result_1['price'],
+                ticket=order_result_1['ticket'],
+                strategy=signal.strategy_name,
+                message=f"Executed {signal.signal_type} order (Part 1): {position_size_1} lots at ${order_result_1['price']:.2f}"
+            )
+
             # Second part with second target
             comment_2 = f"Signal_{signal.id}_{signal.strategy_name}_Part2"
+
+            # Log second order request
+            DBLogger.log_order_request(
+                order_type=signal.signal_type,
+                symbol=signal.symbol,
+                volume=position_size_2,
+                price=0.0,  # Market price
+                stop_loss=stop_loss,
+                take_profit=take_profit_levels[1],
+                strategy=signal.strategy_name,
+                message=f"Placing {signal.signal_type} order (Part 2): {position_size_2} lots of {signal.symbol}"
+            )
 
             order_result_2 = self.connector.place_order(
                 order_type=order_type,
@@ -534,17 +586,28 @@ class EnhancedOrderManager:
             )
             self.trade_repository.add(trade_2)
 
-            self.logger.info(
-                f"Successfully executed {signal.signal_type} with partial profit: "
-                f"position 1: {position_size_1} lots at ${order_result_1['price']:.2f}, "
-                f"TP=${take_profit_levels[0]:.2f}, position 2: {position_size_2} lots at "
-                f"${order_result_2['price']:.2f}, TP=${take_profit_levels[1]:.2f}"
+            # Log second order execution
+            DBLogger.log_order_execution(
+                execution_type="OPENED",
+                symbol=signal.symbol,
+                volume=position_size_2,
+                price=order_result_2['price'],
+                ticket=order_result_2['ticket'],
+                strategy=signal.strategy_name,
+                message=f"Executed {signal.signal_type} order (Part 2): {position_size_2} lots at ${order_result_2['price']:.2f}"
             )
+
+            DBLogger.log_event("INFO",
+                               f"Successfully executed {signal.signal_type} with partial profit: "
+                               f"position 1: {position_size_1} lots at ${order_result_1['price']:.2f}, "
+                               f"TP=${take_profit_levels[0]:.2f}, position 2: {position_size_2} lots at "
+                               f"${order_result_2['price']:.2f}, TP=${take_profit_levels[1]:.2f}",
+                               "OrderManager")
 
             return True
 
         except Exception as e:
-            self.logger.error(f"Error executing partial profit strategy: {str(e)}")
+            DBLogger.log_error("OrderManager", f"Error executing partial profit strategy", exception=e)
             return False
 
     def _execute_close_signal(self, signal, metadata):
@@ -557,14 +620,15 @@ class EnhancedOrderManager:
         Returns:
             bool: True if executed successfully, False otherwise
         """
-        self.logger.info(f"Executing CLOSE signal for {signal.symbol}")
+        DBLogger.log_event("INFO", f"Executing CLOSE signal for {signal.symbol}", "OrderManager")
 
         try:
             # Get the positions to close
             positions = self.connector.get_positions(signal.symbol)
 
             if not positions:
-                self.logger.warning(f"No open positions found for {signal.symbol} to close")
+                DBLogger.log_event("WARNING", f"No open positions found for {signal.symbol} to close",
+                                   "OrderManager")
                 return False
 
             # Extract position filter criteria from metadata if provided
@@ -580,6 +644,15 @@ class EnhancedOrderManager:
 
                 if strategy_filter and strategy_filter not in position['comment']:
                     continue
+
+                # Log close request
+                DBLogger.log_order_request(
+                    order_type="CLOSE",
+                    symbol=signal.symbol,
+                    volume=position['volume'],
+                    ticket=position['ticket'],
+                    message=f"Closing position {position['ticket']}: {position['volume']} lots of {signal.symbol}"
+                )
 
                 # Close the position
                 close_result = self.connector.close_position(position['ticket'])
@@ -597,18 +670,26 @@ class EnhancedOrderManager:
                             self.trade_repository.update(trade)
                             break
 
-                    self.logger.info(
-                        f"Closed position {position['ticket']} at ${close_result['close_price']:.2f}, "
-                        f"profit: ${close_result['profit']:.2f}"
+                    # Log close execution
+                    DBLogger.log_order_execution(
+                        execution_type="CLOSED",
+                        symbol=signal.symbol,
+                        volume=close_result['close_volume'],
+                        price=close_result['close_price'],
+                        ticket=position['ticket'],
+                        profit=close_result['profit'],
+                        message=f"Closed position {position['ticket']} at ${close_result['close_price']:.2f}, "
+                                f"profit: ${close_result['profit']:.2f}"
                     )
                     closed_count += 1
 
             if closed_count > 0:
                 return True
             else:
-                self.logger.warning(f"No matching positions were closed for {signal.symbol}")
+                DBLogger.log_event("WARNING", f"No matching positions were closed for {signal.symbol}",
+                                   "OrderManager")
                 return False
 
         except Exception as e:
-            self.logger.error(f"Error executing close signal: {str(e)}")
+            DBLogger.log_error("OrderManager", f"Error executing close signal", exception=e)
             return False

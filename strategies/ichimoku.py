@@ -1,11 +1,8 @@
 # strategies/ichimoku.py
 import numpy as np
 import pandas as pd
-import json
-from datetime import datetime, timedelta
-from custom_logging.logger import app_logger
+from db_logger.db_logger import DBLogger
 from strategies.base_strategy import BaseStrategy
-from data.models import StrategySignal
 
 
 class IchimokuStrategy(BaseStrategy):
@@ -28,9 +25,13 @@ class IchimokuStrategy(BaseStrategy):
 
         # Validate inputs
         if tenkan_period >= kijun_period:
-            raise ValueError(f"tenkan_period ({tenkan_period}) must be < kijun_period ({kijun_period})")
+            error_msg = f"tenkan_period ({tenkan_period}) must be < kijun_period ({kijun_period})"
+            DBLogger.log_error("IchimokuStrategy", error_msg)
+            raise ValueError(error_msg)
         if kijun_period >= senkou_b_period:
-            raise ValueError(f"kijun_period ({kijun_period}) must be < senkou_b_period ({senkou_b_period})")
+            error_msg = f"kijun_period ({kijun_period}) must be < senkou_b_period ({senkou_b_period})"
+            DBLogger.log_error("IchimokuStrategy", error_msg)
+            raise ValueError(error_msg)
 
         self.tenkan_period = tenkan_period
         self.kijun_period = kijun_period
@@ -39,10 +40,10 @@ class IchimokuStrategy(BaseStrategy):
         # Ensure we fetch enough data for calculations
         self.min_required_candles = kijun_period * 2 + senkou_b_period + 30  # Extra for displaced Senkou spans and Chikou Span
 
-        self.logger.info(
+        DBLogger.log_event("INFO",
             f"Initialized Ichimoku Cloud strategy: {symbol} {timeframe}, "
-            f"Tenkan: {tenkan_period}, Kijun: {kijun_period}, Senkou B: {senkou_b_period}"
-        )
+            f"Tenkan: {tenkan_period}, Kijun: {kijun_period}, Senkou B: {senkou_b_period}",
+            "IchimokuStrategy")
 
     def calculate_indicators(self, data):
         """Calculate strategy indicators on OHLC data.
@@ -54,10 +55,10 @@ class IchimokuStrategy(BaseStrategy):
             pandas.DataFrame: Data with indicators added
         """
         if len(data) < self.min_required_candles:
-            self.logger.warning(
+            DBLogger.log_event("WARNING",
                 f"Insufficient data for Ichimoku calculations. "
-                f"Need at least {self.min_required_candles} candles."
-            )
+                f"Need at least {self.min_required_candles} candles.",
+                "IchimokuStrategy")
             return data
 
         # Calculate Tenkan-sen (Conversion Line): (highest high + lowest low) / 2 for the past tenkan_period
@@ -237,7 +238,7 @@ class IchimokuStrategy(BaseStrategy):
 
         # Check if we have sufficient data after calculations
         if data.empty or 'signal' not in data.columns:
-            self.logger.warning("Insufficient data for Ichimoku analysis after calculations")
+            DBLogger.log_event("Warning", "Insufficient data for Ichimoku analysis after calculations")
             return []
 
         signals = []
@@ -280,7 +281,7 @@ class IchimokuStrategy(BaseStrategy):
             )
             signals.append(signal)
 
-            self.logger.info(
+            DBLogger.log_event("INFO",
                 f"Generated BUY signal for {self.symbol} at {entry_price}. "
                 f"Tenkan: {last_candle['tenkan_sen']:.2f}, Kijun: {last_candle['kijun_sen']:.2f}, "
                 f"Cloud: {'Bullish' if last_candle['cloud_bullish'] else 'Bearish'}"
@@ -320,7 +321,7 @@ class IchimokuStrategy(BaseStrategy):
             )
             signals.append(signal)
 
-            self.logger.info(
+            DBLogger.log_event("INFO",
                 f"Generated SELL signal for {self.symbol} at {entry_price}. "
                 f"Tenkan: {last_candle['tenkan_sen']:.2f}, Kijun: {last_candle['kijun_sen']:.2f}, "
                 f"Cloud: {'Bullish' if last_candle['cloud_bullish'] else 'Bearish'}"

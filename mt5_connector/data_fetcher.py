@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta
-from custom_logging.logger import app_logger
+from db_logger.db_logger import DBLogger
 from mt5_connector.connection import MT5Connector
 from data.models import OHLCData
 from data.db_session import DatabaseSession
@@ -46,12 +46,12 @@ class MT5DataFetcher:
         mt5_timeframe = timeframe_map.get(timeframe.upper())
         if mt5_timeframe is None:
             error_msg = f"Invalid timeframe: {timeframe}"
-            app_logger.error(error_msg)
+            DBLogger.log_error("MT5DataFetcher", error_msg)
             raise ValueError(error_msg)
 
         return mt5_timeframe
 
-    def get_ohlc_data(self, symbol, timeframe, count=100, save_to_db=True):
+    def get_ohlc_data(self, symbol, timeframe, count=200, save_to_db=True):
         """Get OHLC data from MT5.
 
         Args:
@@ -68,16 +68,16 @@ class MT5DataFetcher:
         mt5_timeframe = self._timeframe_to_mt5(timeframe)
 
         # Get rates from MT5
-        app_logger.debug(f"Fetching {count} {timeframe} candles for {symbol}")
+        DBLogger.log_event("DEBUG", f"Fetching {count} {timeframe} candles for {symbol}", "MT5DataFetcher")
         rates = mt5.copy_rates_from_pos(symbol, mt5_timeframe, 0, count)
 
         if rates is None or len(rates) == 0:
             error_code = mt5.last_error()
             error_msg = f"Failed to get OHLC data for {symbol} {timeframe}: Error code {error_code}"
-            app_logger.error(error_msg)
+            DBLogger.log_error("MT5DataFetcher", error_msg)
             raise RuntimeError(error_msg)
 
-        app_logger.debug(f"Received {len(rates)} {timeframe} candles for {symbol}")
+        DBLogger.log_event("DEBUG", f"Received {len(rates)} {timeframe} candles for {symbol}", "MT5DataFetcher")
 
         # Convert to list of OHLCData objects
         ohlc_data = []
@@ -127,7 +127,7 @@ class MT5DataFetcher:
             to_date = datetime.utcnow()
 
         # Get rates from MT5
-        app_logger.debug(f"Fetching {timeframe} candles for {symbol} from {from_date} to {to_date}")
+        DBLogger.log_event("DEBUG", f"Fetching {timeframe} candles for {symbol} from {from_date} to {to_date}", "MT5DataFetcher")
 
         # Convert dates to Unix timestamps
         from_timestamp = int(from_date.timestamp())
@@ -139,13 +139,13 @@ class MT5DataFetcher:
         if rates is None or len(rates) == 0:
             error_code = mt5.last_error()
             if error_code == 0:  # No error, just no data
-                app_logger.warning(f"No data found for {symbol} {timeframe} from {from_date} to {to_date}")
+                DBLogger.log_event("WARNING", f"No data found for {symbol} {timeframe} from {from_date} to {to_date}", "MT5DataFetcher")
                 return []
             error_msg = f"Failed to get OHLC data: Error code {error_code}"
-            app_logger.error(error_msg)
+            DBLogger.log_error("MT5DataFetcher", error_msg)
             raise RuntimeError(error_msg)
 
-        app_logger.debug(f"Received {len(rates)} {timeframe} candles for {symbol}")
+        DBLogger.log_event("DEBUG", f"Received {len(rates)} {timeframe} candles for {symbol}", "MT5DataFetcher")
 
         # Convert to list of OHLCData objects
         ohlc_data = []
@@ -190,7 +190,7 @@ class MT5DataFetcher:
         from_date = datetime.utcnow() - timedelta(days=days_back)
         to_date = datetime.utcnow()
 
-        app_logger.debug(f"Syncing missing {timeframe} data for {symbol}")
+        DBLogger.log_event("DEBUG", f"Syncing missing {timeframe} data for {symbol}", "MT5DataFetcher")
 
         # First, get existing data from the database
         existing_data = self.repository.get_candles_range(
@@ -220,7 +220,7 @@ class MT5DataFetcher:
                 synced_count += 1
 
         if synced_count > 0:
-            app_logger.debug(f"Synced {synced_count} missing candles for {symbol} {timeframe}")
+            DBLogger.log_event("DEBUG", f"Synced {synced_count} missing candles for {symbol} {timeframe}", "MT5DataFetcher")
 
         return synced_count
 
@@ -247,6 +247,7 @@ class MT5DataFetcher:
                 'low': candle.low,
                 'close': candle.close,
                 'volume': candle.volume,
+                # mt5_connector/data_fetcher.py (continued)
                 'tick_volume': candle.tick_volume,
                 'spread': candle.spread
             }

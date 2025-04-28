@@ -1,5 +1,7 @@
+# strategies/momentum_scalping.py
 import numpy as np
 import pandas as pd
+from db_logger.db_logger import DBLogger
 from strategies.base_strategy import BaseStrategy
 
 
@@ -24,7 +26,9 @@ class MomentumScalpingStrategy(BaseStrategy):
 
         # Validate inputs
         if macd_fast >= macd_slow:
-            raise ValueError(f"macd_fast ({macd_fast}) must be < macd_slow ({macd_slow})")
+            error_msg = f"macd_fast ({macd_fast}) must be < macd_slow ({macd_slow})"
+            DBLogger.log_error("MomentumScalpingStrategy", error_msg)
+            raise ValueError(error_msg)
 
         self.ema_period = ema_period
         self.macd_fast = macd_fast
@@ -34,10 +38,10 @@ class MomentumScalpingStrategy(BaseStrategy):
         # Ensure we fetch enough data for calculations
         self.min_required_candles = max(ema_period, macd_slow + macd_signal) + 20
 
-        self.logger.info(
+        DBLogger.log_event("INFO",
             f"Initialized Momentum Scalping strategy: {symbol} {timeframe}, "
-            f"EMA: {ema_period}, MACD: {macd_fast}/{macd_slow}/{macd_signal}"
-        )
+            f"EMA: {ema_period}, MACD: {macd_fast}/{macd_slow}/{macd_signal}",
+            "MomentumScalpingStrategy")
 
     def calculate_indicators(self, data):
         """Calculate strategy indicators on OHLC data.
@@ -49,10 +53,10 @@ class MomentumScalpingStrategy(BaseStrategy):
             pandas.DataFrame: Data with indicators added
         """
         if len(data) < self.min_required_candles:
-            self.logger.warning(
+            DBLogger.log_event("WARNING",
                 f"Insufficient data for momentum calculations. "
-                f"Need at least {self.min_required_candles} candles."
-            )
+                f"Need at least {self.min_required_candles} candles.",
+                "MomentumScalpingStrategy")
             return data
 
         # Calculate 20 EMA
@@ -208,19 +212,19 @@ class MomentumScalpingStrategy(BaseStrategy):
         """
         # Check if data is None or empty
         if data is None or not isinstance(data, pd.DataFrame) or data.empty:
-            self.logger.warning("No data provided for momentum scalping analysis")
+            DBLogger.log_event("WARNING", "No data provided for momentum scalping analysis", "MomentumScalpingStrategy")
             return []
 
         # Calculate indicators
         try:
             data = self.calculate_indicators(data)
         except Exception as e:
-            self.logger.error(f"Error calculating indicators: {str(e)}")
+            DBLogger.log_error("MomentumScalpingStrategy", "Error calculating indicators", exception=e)
             return []
 
         # Check if we have sufficient data after calculations
         if data.empty or 'signal' not in data.columns:
-            self.logger.warning("Insufficient data for momentum scalping analysis after calculations")
+            DBLogger.log_event("WARNING", "Insufficient data for momentum scalping analysis after calculations", "MomentumScalpingStrategy")
             return []
 
         signals = []
@@ -263,11 +267,11 @@ class MomentumScalpingStrategy(BaseStrategy):
             )
             signals.append(signal)
 
-            self.logger.info(
+            DBLogger.log_event("INFO",
                 f"Generated BUY signal for {self.symbol} at {entry_price}. "
                 f"Stop loss: {stop_loss:.2f}, Take profit (1R): {take_profit_1r:.2f}, "
-                f"MACD histogram: {last_candle['macd_histogram']:.6f}"
-            )
+                f"MACD histogram: {last_candle['macd_histogram']:.6f}",
+                "MomentumScalpingStrategy")
 
         elif last_candle['signal'] == -1:  # Sell signal
             # Create SELL signal
@@ -303,10 +307,10 @@ class MomentumScalpingStrategy(BaseStrategy):
             )
             signals.append(signal)
 
-            self.logger.info(
+            DBLogger.log_event("INFO",
                 f"Generated SELL signal for {self.symbol} at {entry_price}. "
                 f"Stop loss: {stop_loss:.2f}, Take profit (1R): {take_profit_1r:.2f}, "
-                f"MACD histogram: {last_candle['macd_histogram']:.6f}"
-            )
+                f"MACD histogram: {last_candle['macd_histogram']:.6f}",
+                "MomentumScalpingStrategy")
 
         return signals

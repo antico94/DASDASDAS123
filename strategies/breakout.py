@@ -1,11 +1,8 @@
 # strategies/breakout.py
 import numpy as np
 import pandas as pd
-import json
-from datetime import datetime, timedelta
-from custom_logging.logger import app_logger
+from db_logger.db_logger import DBLogger
 from strategies.base_strategy import BaseStrategy
-from data.models import StrategySignal
 
 
 class BreakoutStrategy(BaseStrategy):
@@ -33,7 +30,9 @@ class BreakoutStrategy(BaseStrategy):
 
         # Validate inputs
         if lookback_periods < min_range_bars:
-            raise ValueError(f"lookback_periods ({lookback_periods}) must be >= min_range_bars ({min_range_bars})")
+            error_msg = f"lookback_periods ({lookback_periods}) must be >= min_range_bars ({min_range_bars})"
+            DBLogger.log_error("BreakoutStrategy", error_msg)
+            raise ValueError(error_msg)
 
         self.lookback_periods = lookback_periods
         self.min_range_bars = min_range_bars
@@ -42,19 +41,19 @@ class BreakoutStrategy(BaseStrategy):
         # Ensure we fetch enough data for calculations
         self.min_required_candles = lookback_periods + 20
 
-        self.logger.info(
+        DBLogger.log_event("INFO",
             f"Initialized Breakout strategy: {symbol} {timeframe}, "
             f"Lookback: {lookback_periods}, Min Range Bars: {min_range_bars}, "
-            f"Volume Threshold: {volume_threshold}"
-        )
+            f"Volume Threshold: {volume_threshold}",
+            "BreakoutStrategy")
 
     def calculate_indicators(self, data):
         """Calculate strategy indicators on OHLC data."""
         if len(data) < self.min_required_candles:
-            self.logger.warning(
+            DBLogger.log_event("WARNING",
                 f"Insufficient data for breakout calculations. "
-                f"Need at least {self.min_required_candles} candles."
-            )
+                f"Need at least {self.min_required_candles} candles.",
+                "BreakoutStrategy")
             return data
 
         # Calculate Average True Range (ATR) for volatility
@@ -241,7 +240,7 @@ class BreakoutStrategy(BaseStrategy):
 
         # Check if we have sufficient data after calculations
         if data.empty or 'breakout_signal' not in data.columns:
-            self.logger.warning("Insufficient data for analysis after calculations")
+            DBLogger.log_event("WARNING", "Insufficient data for analysis after calculations", "BreakoutStrategy")
             return []
 
         signals = []
@@ -294,12 +293,12 @@ class BreakoutStrategy(BaseStrategy):
             )
             signals.append(signal)
 
-            self.logger.info(
+            DBLogger.log_event("INFO",
                 f"Generated BUY signal for {self.symbol} at {entry_price}. "
                 f"Breakout above {last_candle['range_top']:.2f} after "
                 f"{last_candle['range_bars']} bars in range. "
-                f"Volume ratio: {last_candle['volume_ratio']:.2f}, ATR: {atr:.2f}"
-            )
+                f"Volume ratio: {last_candle['volume_ratio']:.2f}, ATR: {atr:.2f}",
+                "BreakoutStrategy")
 
         elif last_candle['breakout_signal'] == -1:  # Bearish breakout
             # Create SELL signal
@@ -342,11 +341,11 @@ class BreakoutStrategy(BaseStrategy):
             )
             signals.append(signal)
 
-            self.logger.info(
+            DBLogger.log_event("INFO",
                 f"Generated SELL signal for {self.symbol} at {entry_price}. "
                 f"Breakout below {last_candle['range_bottom']:.2f} after "
                 f"{last_candle['range_bars']} bars in range. "
-                f"Volume ratio: {last_candle['volume_ratio']:.2f}, ATR: {atr:.2f}"
-            )
+                f"Volume ratio: {last_candle['volume_ratio']:.2f}, ATR: {atr:.2f}",
+                "BreakoutStrategy")
 
         return signals

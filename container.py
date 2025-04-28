@@ -1,6 +1,5 @@
 # container.py (updated)
 from dependency_injector import containers, providers
-from custom_logging.logger import app_logger
 from data.repository import (
     OHLCDataRepository,
     StrategySignalRepository,

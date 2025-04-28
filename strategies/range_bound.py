@@ -1,12 +1,8 @@
 # strategies/range_bound.py - Updated version
-
 import numpy as np
 import pandas as pd
-import json
-from datetime import datetime, timedelta
-from custom_logging.logger import app_logger
+from db_logger.db_logger import DBLogger
 from strategies.base_strategy import BaseStrategy
-from data.models import StrategySignal
 
 
 class RangeBoundStrategy(BaseStrategy):
@@ -39,9 +35,13 @@ class RangeBoundStrategy(BaseStrategy):
 
         # Validate inputs
         if lookback_periods < min_range_bars:
-            raise ValueError(f"lookback_periods ({lookback_periods}) must be >= min_range_bars ({min_range_bars})")
+            error_msg = f"lookback_periods ({lookback_periods}) must be >= min_range_bars ({min_range_bars})"
+            DBLogger.log_error("RangeBoundStrategy", error_msg)
+            raise ValueError(error_msg)
         if rsi_overbought <= rsi_oversold:
-            raise ValueError(f"rsi_overbought ({rsi_overbought}) must be > rsi_oversold ({rsi_oversold})")
+            error_msg = f"rsi_overbought ({rsi_overbought}) must be > rsi_oversold ({rsi_oversold})"
+            DBLogger.log_error("RangeBoundStrategy", error_msg)
+            raise ValueError(error_msg)
 
         self.lookback_periods = lookback_periods
         self.min_range_bars = min_range_bars
@@ -54,10 +54,10 @@ class RangeBoundStrategy(BaseStrategy):
         # Ensure we fetch enough data for calculations
         self.min_required_candles = lookback_periods + max(rsi_period, adx_period) + 20
 
-        self.logger.info(
+        DBLogger.log_event("INFO",
             f"Initialized Range-Bound Mean Reversion strategy: {symbol} {timeframe}, "
-            f"RSI: {rsi_period}/{rsi_oversold}/{rsi_overbought}, ADX threshold: {adx_threshold}"
-        )
+            f"RSI: {rsi_period}/{rsi_oversold}/{rsi_overbought}, ADX threshold: {adx_threshold}",
+            "RangeBoundStrategy")
 
     def calculate_indicators(self, data):
         """Calculate strategy indicators on OHLC data.
@@ -69,17 +69,17 @@ class RangeBoundStrategy(BaseStrategy):
             pandas.DataFrame: Data with indicators added
         """
         if len(data) < self.min_required_candles:
-            self.logger.warning(
+            DBLogger.log_event("WARNING",
                 f"Insufficient data for range-bound calculations. "
-                f"Need at least {self.min_required_candles} candles."
-            )
+                f"Need at least {self.min_required_candles} candles.",
+                "RangeBoundStrategy")
             return data
 
         # Make a copy to avoid modifying the original data
         df = data.copy()
 
         # Calculate RSI
-        self.logger.debug("Calculating RSI...")
+        DBLogger.log_event("DEBUG", "Calculating RSI...", "RangeBoundStrategy")
         # Calculate price differences
         delta = df['close'].diff()
 
@@ -101,7 +101,7 @@ class RangeBoundStrategy(BaseStrategy):
         df['rsi'] = 100 - (100 / (1 + rs))
 
         # Calculate Bollinger Bands
-        self.logger.debug("Calculating Bollinger Bands...")
+        DBLogger.log_event("DEBUG", "Calculating Bollinger Bands...", "RangeBoundStrategy")
         # Calculate 20-period SMA as middle band
         df['middle_band'] = df['close'].rolling(window=20).mean()
 
@@ -116,15 +116,15 @@ class RangeBoundStrategy(BaseStrategy):
         df['bb_width'] = (df['upper_band'] - df['lower_band']) / df['middle_band']
 
         # Calculate ADX and directional indicators
-        self.logger.debug("Calculating ADX...")
+        DBLogger.log_event("DEBUG", "Calculating ADX...", "RangeBoundStrategy")
         df = self._calculate_adx(df)
 
         # Identify potential ranges in the data
-        self.logger.debug("Identifying price ranges...")
+        DBLogger.log_event("DEBUG", "Identifying price ranges...", "RangeBoundStrategy")
         df = self._identify_ranges(df)
 
         # Identify entry signals at range extremes with oscillator confirmation
-        self.logger.debug("Identifying entry signals...")
+        DBLogger.log_event("DEBUG", "Identifying entry signals...", "RangeBoundStrategy")
         df = self._identify_entry_signals(df)
 
         return df
@@ -140,24 +140,24 @@ class RangeBoundStrategy(BaseStrategy):
         """
         # Check if data is None or empty
         if data is None or len(data) == 0:
-            self.logger.warning("No data provided for range-bound analysis")
+            DBLogger.log_event("WARNING", "No data provided for range-bound analysis", "RangeBoundStrategy")
             return []
 
         # Calculate indicators
         try:
             data = self.calculate_indicators(data)
         except Exception as e:
-            self.logger.error(f"Error calculating indicators: {str(e)}")
+            DBLogger.log_error("RangeBoundStrategy", "Error calculating indicators", exception=e)
             return []
 
         # Check if data is None or empty after calculations
         if data is None or (hasattr(data, 'empty') and data.empty):
-            self.logger.warning("Insufficient data for range-bound analysis after calculations")
+            DBLogger.log_event("WARNING", "Insufficient data for range-bound analysis after calculations", "RangeBoundStrategy")
             return []
 
         # Check if required columns exist
         if 'signal' not in data.columns:
-            self.logger.warning("Required column 'signal' not found in processed data")
+            DBLogger.log_event("WARNING", "Required column 'signal' not found in processed data", "RangeBoundStrategy")
             return []
 
         signals = []
@@ -174,8 +174,9 @@ class RangeBoundStrategy(BaseStrategy):
 
             # Ensure stop loss is valid
             if stop_loss >= entry_price:
-                self.logger.warning(
-                    f"Invalid stop loss ({stop_loss}) for BUY signal - must be below entry price ({entry_price})")
+                DBLogger.log_event("WARNING",
+                    f"Invalid stop loss ({stop_loss}) for BUY signal - must be below entry price ({entry_price})",
+                    "RangeBoundStrategy")
                 stop_loss = entry_price * 0.995  # Default 0.5% below entry
 
             # Calculate extended take profit (full range)
@@ -201,11 +202,11 @@ class RangeBoundStrategy(BaseStrategy):
             )
             signals.append(signal)
 
-            self.logger.info(
+            DBLogger.log_event("INFO",
                 f"Generated BUY signal for {self.symbol} at {entry_price}. "
                 f"Support around {range_bottom:.2f}, RSI: {last_candle['rsi']:.1f}, "
-                f"ADX: {last_candle['adx']:.1f}."
-            )
+                f"ADX: {last_candle['adx']:.1f}.",
+                "RangeBoundStrategy")
 
         elif last_candle['signal'] == -1:  # Sell signal
             # Create SELL signal
@@ -215,8 +216,9 @@ class RangeBoundStrategy(BaseStrategy):
 
             # Ensure stop loss is valid
             if stop_loss <= entry_price:
-                self.logger.warning(
-                    f"Invalid stop loss ({stop_loss}) for SELL signal - must be above entry price ({entry_price})")
+                DBLogger.log_event("WARNING",
+                    f"Invalid stop loss ({stop_loss}) for SELL signal - must be above entry price ({entry_price})",
+                    "RangeBoundStrategy")
                 stop_loss = entry_price * 1.005  # Default 0.5% above entry
 
             # Calculate extended take profit (full range)
@@ -242,11 +244,11 @@ class RangeBoundStrategy(BaseStrategy):
             )
             signals.append(signal)
 
-            self.logger.info(
+            DBLogger.log_event("INFO",
                 f"Generated SELL signal for {self.symbol} at {entry_price}. "
                 f"Resistance around {range_top:.2f}, RSI: {last_candle['rsi']:.1f}, "
-                f"ADX: {last_candle['adx']:.1f}."
-            )
+                f"ADX: {last_candle['adx']:.1f}.",
+                "RangeBoundStrategy")
 
         return signals
 
@@ -382,7 +384,7 @@ class RangeBoundStrategy(BaseStrategy):
 
         # Add logging to help debug test failures
         range_count = data['in_range'].sum()
-        self.logger.debug(f"Identified {range_count} bars in range conditions")
+        DBLogger.log_event("DEBUG", f"Identified {range_count} bars in range conditions", "RangeBoundStrategy")
 
         return data
 
@@ -458,10 +460,10 @@ class RangeBoundStrategy(BaseStrategy):
                 data.loc[data.index[i], 'stop_loss'] = stop_loss
                 data.loc[data.index[i], 'take_profit'] = take_profit_midpoint  # Using midpoint for main TP
 
-            # Sell Signal Conditions:
-            # 1. Price is near the upper boundary of the range
-            # 2. RSI is overbought
-            # 3. ADX is below threshold (non-trending)
+                # Sell Signal Conditions:
+                # 1. Price is near the upper boundary of the range
+                # 2. RSI is overbought
+                # 3. ADX is below threshold (non-trending)
             elif (current_close > range_midpoint and
                   proximity_to_top > 0.7 and  # Close to top
                   not np.isnan(current_rsi) and current_rsi >= self.rsi_overbought and
@@ -482,4 +484,4 @@ class RangeBoundStrategy(BaseStrategy):
                 data.loc[data.index[i], 'stop_loss'] = stop_loss
                 data.loc[data.index[i], 'take_profit'] = take_profit_midpoint  # Using midpoint for main TP
 
-        return data
+            return data

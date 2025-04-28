@@ -1,7 +1,7 @@
 # execution/trailing_stop.py - Updated with strategy-specific mechanics
 import json
 from datetime import datetime
-from custom_logging.logger import app_logger
+from db_logger.db_logger import DBLogger
 from mt5_connector.connection import MT5Connector
 from data.repository import TradeRepository
 from mt5_connector.data_fetcher import MT5DataFetcher
@@ -15,7 +15,6 @@ class EnhancedTrailingStopManager:
         self.connector = connector or MT5Connector()
         self.trade_repository = trade_repository or TradeRepository()
         self.data_fetcher = data_fetcher or MT5DataFetcher(connector=self.connector)
-        self.logger = app_logger
 
     def update_trailing_stops(self):
         """Update trailing stops for all open positions with strategy-based trailing."""
@@ -23,10 +22,10 @@ class EnhancedTrailingStopManager:
         positions = self.connector.get_positions()
 
         if not positions:
-            self.logger.debug("No open positions to update trailing stops")
+            DBLogger.log_event("DEBUG", "No open positions to update trailing stops", "TrailingStopManager")
             return 0
 
-        self.logger.info(f"Updating trailing stops for {len(positions)} positions")
+        DBLogger.log_event("INFO", f"Updating trailing stops for {len(positions)} positions", "TrailingStopManager")
 
         updated_count = 0
         for position in positions:
@@ -72,9 +71,14 @@ class EnhancedTrailingStopManager:
                         trade.stop_loss = new_sl
                         self.trade_repository.update(trade)
 
-                        self.logger.info(
-                            f"Updated trailing stop for position {position['ticket']} "
-                            f"({position['symbol']}): {current_sl} -> {new_sl}"
+                        DBLogger.log_position(
+                            position_type="MODIFIED",
+                            symbol=position['symbol'],
+                            ticket=position['ticket'],
+                            volume=position['volume'],
+                            stop_loss=new_sl,
+                            message=f"Updated trailing stop for position {position['ticket']} "
+                                   f"({position['symbol']}): {current_sl} -> {new_sl}"
                         )
                         updated_count += 1
 
@@ -119,16 +123,21 @@ class EnhancedTrailingStopManager:
                                     stop_loss=new_sl
                                 )
 
-                                self.logger.info(
-                                    f"First target reached - moved second half stop to breakeven: "
-                                    f"position {second_half['ticket']}, SL: {new_sl}"
+                                DBLogger.log_position(
+                                    position_type="MODIFIED",
+                                    symbol=second_half['symbol'],
+                                    ticket=second_half['ticket'],
+                                    volume=second_half['volume'],
+                                    stop_loss=new_sl,
+                                    message=f"First target reached - moved second half stop to breakeven: "
+                                           f"position {second_half['ticket']}, SL: {new_sl}"
                                 )
                                 updated_count += 1
 
             except Exception as e:
-                self.logger.error(f"Error updating trailing stop for position {position['ticket']}: {str(e)}")
+                DBLogger.log_error("TrailingStopManager", f"Error updating trailing stop for position {position['ticket']}", exception=e)
 
-        self.logger.info(f"Updated trailing stops for {updated_count} positions")
+        DBLogger.log_event("INFO", f"Updated trailing stops for {updated_count} positions", "TrailingStopManager")
         return updated_count
 
     def _calculate_trailing_stop(self, position, strategy_name, trade, is_partial):
@@ -232,11 +241,9 @@ class EnhancedTrailingStopManager:
         if position_type == 0:  # BUY
             # Check if price has moved 2×ATR from entry
             if current_price >= entry_price + (atr * 2):
-                # Trail by 1.5×ATR
                 new_sl = current_price - (atr * 1.5)
                 if new_sl > current_sl:
                     return new_sl
-
         else:  # SELL
             # Check if price has moved 2×ATR from entry
             if current_price <= entry_price - (atr * 2):
@@ -245,7 +252,6 @@ class EnhancedTrailingStopManager:
                 if new_sl < current_sl:
                     return new_sl
 
-        # If price hasn't moved enough, no update
         return None
 
     def _range_trailing_stop(self, position, metadata):
@@ -395,11 +401,12 @@ class EnhancedTrailingStopManager:
                 if signal and signal.signal_data:
                     metadata = json.loads(signal.signal_data)
             except Exception as e:
-                self.logger.warning(f"Could not get signal metadata: {str(e)}")
+                DBLogger.log_error("TrailingStopManager", "Could not get signal metadata", exception=e)
 
         return metadata
 
-    # Existing helper methods...
+        # Existing helper methods...
+
     def _extract_strategy_name(self, comment):
         """Extract strategy name from position comment."""
         parts = comment.split('_')

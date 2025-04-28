@@ -4,7 +4,7 @@ import re
 import time
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta
-from custom_logging.logger import app_logger
+from db_logger.db_logger import DBLogger
 from config import Config
 
 
@@ -29,11 +29,11 @@ class MT5Connector:
 
     def _initialize_mt5(self):
         """Initialize the connection to the MT5 terminal."""
-        app_logger.info("Connecting to MetaTrader 5...")
+        DBLogger.log_event("INFO", "Connecting to MetaTrader 5...", "MT5Connector")
 
         if not os.path.exists(Config.MT5_TERMINAL_PATH):
             error_msg = f"MT5 terminal path not found: {Config.MT5_TERMINAL_PATH}"
-            app_logger.error(error_msg)
+            DBLogger.log_error("MT5Connector", error_msg)
             raise ValueError(error_msg)
 
         # Initialize MT5
@@ -45,16 +45,16 @@ class MT5Connector:
         ):
             error_code = mt5.last_error()
             error_msg = f"Failed to connect to MT5: Error code {error_code}"
-            app_logger.error(error_msg)
+            DBLogger.log_error("MT5Connector", error_msg)
             raise ConnectionError(error_msg)
 
-        app_logger.info("MetaTrader 5 connected successfully")
+        DBLogger.log_event("INFO", "MetaTrader 5 connected successfully", "MT5Connector")
         self._is_connected = True
 
     def ensure_connection(self):
         """Ensure the connection to MT5 is active, reconnect if necessary."""
         if not self._is_connected or not mt5.terminal_info():
-            app_logger.warning("MT5 connection lost, reconnecting...")
+            DBLogger.log_event("WARNING", "MT5 connection lost, reconnecting...", "MT5Connector")
             mt5.shutdown()
             time.sleep(1)
             self._initialize_mt5()
@@ -64,7 +64,7 @@ class MT5Connector:
         if self._is_connected:
             mt5.shutdown()
             self._is_connected = False
-            app_logger.info("Disconnected from MetaTrader 5")
+            DBLogger.log_event("INFO", "Disconnected from MetaTrader 5", "MT5Connector")
 
     def get_account_info(self):
         """Get account information from MT5.
@@ -79,7 +79,7 @@ class MT5Connector:
             if account_info is None:
                 error_code = mt5.last_error()
                 error_msg = f"Failed to get account info: Error code {error_code}"
-                app_logger.error(error_msg)
+                DBLogger.log_error("MT5Connector", error_msg)
                 # Return a default dictionary with zeros instead of raising an exception
                 return {
                     'balance': 0.0,
@@ -106,7 +106,7 @@ class MT5Connector:
         except Exception as e:
             import traceback
             trace = traceback.format_exc()
-            app_logger.error(f"Error getting account info: {str(e)}\n{trace}")
+            DBLogger.log_error("MT5Connector", f"Error getting account info: {str(e)}", exception=e)
             # Return a default dictionary with zeros
             return {
                 'balance': 0.0,
@@ -131,7 +131,7 @@ class MT5Connector:
 
         if symbol is None or not isinstance(symbol, str):
             error_msg = f"Invalid symbol: {symbol}"
-            app_logger.error(error_msg)
+            DBLogger.log_error("MT5Connector", error_msg)
             raise ValueError(error_msg)
 
         try:
@@ -139,7 +139,7 @@ class MT5Connector:
             if symbol_info is None:
                 error_code = mt5.last_error()
                 error_msg = f"Failed to get info for {symbol}: Error code {error_code}"
-                app_logger.error(error_msg)
+                DBLogger.log_error("MT5Connector", error_msg)
                 raise ValueError(error_msg)
 
             # Convert to a regular dictionary with validation
@@ -159,7 +159,7 @@ class MT5Connector:
             for key in ['min_lot', 'max_lot', 'lot_step']:
                 if result[key] is None:
                     error_msg = f"Symbol info for {symbol} has None value for {key}"
-                    app_logger.error(error_msg)
+                    DBLogger.log_error("MT5Connector", error_msg)
                     # Use default values instead of None
                     if key == 'min_lot':
                         result[key] = 0.01
@@ -170,7 +170,7 @@ class MT5Connector:
 
             return result
         except Exception as e:
-            app_logger.error(f"Error getting symbol info: {str(e)}")
+            DBLogger.log_error("MT5Connector", f"Error getting symbol info: {str(e)}", exception=e)
             # Return safe default values instead of raising an exception
             return {
                 'name': symbol,
@@ -208,7 +208,7 @@ class MT5Connector:
             if error_code == 0:  # No error, just no positions
                 return []
             error_msg = f"Failed to get positions: Error code {error_code}"
-            app_logger.error(error_msg)
+            DBLogger.log_error("MT5Connector", error_msg)
             raise RuntimeError(error_msg)
 
         # Convert position_data to list of dictionaries
@@ -239,14 +239,15 @@ class MT5Connector:
 
         if volume < symbol_info['min_lot']:
             error_msg = f"Volume {volume} is below minimum lot size {symbol_info['min_lot']}"
-            app_logger.error(error_msg)
+            DBLogger.log_error("MT5Connector", error_msg)
             raise ValueError(error_msg)
 
         # Validate volume step
         volume_steps = round(volume / symbol_info['lot_step'])
         adjusted_volume = volume_steps * symbol_info['lot_step']
         if abs(adjusted_volume - volume) > 1e-10:  # Using epsilon for float comparison
-            app_logger.warning(f"Volume adjusted from {volume} to {adjusted_volume} to match lot step")
+            DBLogger.log_event("WARNING", f"Volume adjusted from {volume} to {adjusted_volume} to match lot step",
+                               "MT5Connector")
             volume = adjusted_volume
 
         # Create order request
@@ -255,7 +256,7 @@ class MT5Connector:
 
         if action is None:
             error_msg = f"Invalid order type: {order_type}"
-            app_logger.error(error_msg)
+            DBLogger.log_error("MT5Connector", error_msg)
             raise ValueError(error_msg)
 
         # Get current price for market orders
@@ -277,9 +278,17 @@ class MT5Connector:
             "type_filling": mt5.ORDER_FILLING_FOK,  # Fill or kill
         }
 
-        # Send order
+        # Log order request
         order_desc = 'BUY' if order_type == 0 else 'SELL'
-        app_logger.info(f"Placing {order_desc} order: {volume} lots of {symbol} at ${price:.2f}")
+        DBLogger.log_order_request(
+            order_type=order_desc,
+            symbol=symbol,
+            volume=volume,
+            price=price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            message=f"Placing {order_desc} order: {volume} lots of {symbol} at ${price:.2f}"
+        )
 
         try:
             result = mt5.order_send(request)
@@ -287,15 +296,23 @@ class MT5Connector:
             if result is None:
                 error_code = mt5.last_error()
                 error_msg = f"Order failed: MT5 returned None, error code: {error_code}"
-                app_logger.error(error_msg)
+                DBLogger.log_error("MT5Connector", error_msg)
                 raise RuntimeError(error_msg)
 
             if result.retcode != mt5.TRADE_RETCODE_DONE:
                 error_msg = f"Order failed: {result.retcode}, {result.comment}"
-                app_logger.error(error_msg)
+                DBLogger.log_error("MT5Connector", error_msg)
                 raise RuntimeError(error_msg)
 
-            app_logger.info(f"Order placed successfully: Ticket #{result.order}")
+            # Log successful order execution
+            DBLogger.log_order_execution(
+                execution_type="OPENED",
+                symbol=symbol,
+                volume=volume,
+                price=result.price,
+                ticket=result.order,
+                message=f"Order placed successfully: Ticket #{result.order}"
+            )
 
             return {
                 'ticket': result.order,
@@ -308,7 +325,7 @@ class MT5Connector:
                 'comment': comment
             }
         except Exception as e:
-            app_logger.error(f"Exception placing order: {str(e)}")
+            DBLogger.log_error("MT5Connector", f"Exception placing order: {str(e)}", exception=e)
             raise  # Re-raise to handle in calling function
 
     def modify_position(self, ticket, stop_loss=None, take_profit=None):
@@ -328,7 +345,7 @@ class MT5Connector:
         position = mt5.positions_get(ticket=ticket)
         if not position:
             error_msg = f"Position with ticket {ticket} not found"
-            app_logger.error(error_msg)
+            DBLogger.log_error("MT5Connector", error_msg)
             raise ValueError(error_msg)
 
         position = position[0]  # Extract position from the tuple
@@ -339,7 +356,7 @@ class MT5Connector:
 
         # No changes needed
         if sl == position.sl and tp == position.tp:
-            app_logger.debug(f"No changes needed for position {ticket}")
+            DBLogger.log_event("DEBUG", f"No changes needed for position {ticket}", "MT5Connector")
             return True
 
         # Create modification request
@@ -351,15 +368,34 @@ class MT5Connector:
             "tp": tp
         }
 
-        app_logger.debug(f"Modifying position {ticket}: SL=${sl:.2f}, TP=${tp:.2f}")
+        # Log modification request
+        DBLogger.log_order_request(
+            order_type="MODIFY",
+            symbol=position.symbol,
+            ticket=ticket,
+            stop_loss=sl,
+            take_profit=tp,
+            message=f"Modifying position {ticket}: SL=${sl:.2f}, TP=${tp:.2f}"
+        )
+
         result = mt5.order_send(request)
 
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             error_msg = f"Position modification failed: {result.retcode}, {result.comment}"
-            app_logger.error(error_msg)
+            DBLogger.log_error("MT5Connector", error_msg)
             raise RuntimeError(error_msg)
 
-        app_logger.info(f"Position {ticket} modified: SL=${sl:.2f}, TP=${tp:.2f}")
+        # Log successful modification
+        DBLogger.log_position(
+            position_type="MODIFIED",
+            symbol=position.symbol,
+            ticket=ticket,
+            volume=position.volume,
+            stop_loss=sl,
+            take_profit=tp,
+            message=f"Position {ticket} modified: SL=${sl:.2f}, TP=${tp:.2f}"
+        )
+
         return True
 
     def close_position(self, ticket, volume=None):
@@ -378,7 +414,7 @@ class MT5Connector:
         position = mt5.positions_get(ticket=ticket)
         if not position:
             error_msg = f"Position with ticket {ticket} not found"
-            app_logger.error(error_msg)
+            DBLogger.log_error("MT5Connector", error_msg)
             raise ValueError(error_msg)
 
         position = position[0]  # Extract position from the tuple
@@ -389,7 +425,7 @@ class MT5Connector:
         # Validate volume
         if close_volume > position.volume:
             error_msg = f"Close volume {close_volume} exceeds position volume {position.volume}"
-            app_logger.error(error_msg)
+            DBLogger.log_error("MT5Connector", error_msg)
             raise ValueError(error_msg)
 
         # Create close request
@@ -407,15 +443,35 @@ class MT5Connector:
             "type_filling": mt5.ORDER_FILLING_FOK,
         }
 
-        app_logger.info(f"Closing position {ticket}: volume={close_volume}")
+        # Log close request
+        DBLogger.log_order_request(
+            order_type="CLOSE",
+            symbol=position.symbol,
+            volume=close_volume,
+            ticket=ticket,
+            message=f"Closing position {ticket}: volume={close_volume}"
+        )
+
         result = mt5.order_send(request)
 
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             error_msg = f"Position close failed: {result.retcode}, {result.comment}"
-            app_logger.error(error_msg)
+            DBLogger.log_error("MT5Connector", error_msg)
             raise RuntimeError(error_msg)
 
-        app_logger.info(f"Position {ticket} closed: price=${result.price:.2f}, profit=${result.profit:.2f}")
+        # Log close operation success
+        is_partial = close_volume < position.volume
+        position_type = "PARTIAL_CLOSE" if is_partial else "CLOSED"
+
+        DBLogger.log_position(
+            position_type=position_type,
+            symbol=position.symbol,
+            ticket=ticket,
+            volume=close_volume,
+            current_price=result.price,
+            profit=result.profit,
+            message=f"Position {ticket} closed: price=${result.price:.2f}, profit=${result.profit:.2f}"
+        )
 
         return {
             'ticket': ticket,
@@ -438,7 +494,8 @@ class MT5Connector:
         except Exception:
             # Handle cases where str() might fail for very unusual inputs
             comment_str = ""
-            app_logger.warning(f"Could not convert comment to string: {comment}. Using empty string.")
+            DBLogger.log_event("WARNING", f"Could not convert comment to string: {comment}. Using empty string.",
+                               "MT5Connector")
 
         # --- MODIFIED REGEX ---
         # Remove any characters NOT in the allowed set: letters, digits
@@ -453,9 +510,10 @@ class MT5Connector:
         # If sanitization results in an empty string, use a safe default comment
         # This prevents sending a blank comment if the original was all disallowed characters
         if not sanitized:
-            sanitized = "BotOrder" # Or use a more specific default like "Signal"
+            sanitized = "BotOrder"  # Or use a more specific default like "Signal"
 
         # Add a debug log here to see the final comment being used
-        app_logger.debug(f"Original comment: '{comment_str}' -> Sanitized comment: '{sanitized}'")
+        DBLogger.log_event("DEBUG", f"Original comment: '{comment_str}' -> Sanitized comment: '{sanitized}'",
+                           "MT5Connector")
 
         return sanitized

@@ -1,5 +1,6 @@
 # strategies/moving_average.py
 import numpy as np
+from db_logger.db_logger import DBLogger
 from strategies.base_strategy import BaseStrategy
 
 
@@ -22,7 +23,9 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
 
         # Validate inputs
         if fast_period >= slow_period:
-            raise ValueError(f"Fast period ({fast_period}) must be less than slow period ({slow_period})")
+            error_msg = f"Fast period ({fast_period}) must be less than slow period ({slow_period})"
+            DBLogger.log_error("MovingAverageStrategy", error_msg)
+            raise ValueError(error_msg)
 
         self.fast_period = fast_period
         self.slow_period = slow_period
@@ -30,18 +33,18 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
         # Ensure we fetch enough data for calculations
         self.min_required_candles = slow_period + 30  # Need extra bars for swing high/low detection
 
-        self.logger.info(
+        DBLogger.log_event("INFO",
             f"Initialized Enhanced Moving Average strategy: {symbol} {timeframe}, "
-            f"Fast EMA: {fast_period}, Slow EMA: {slow_period}"
-        )
+            f"Fast EMA: {fast_period}, Slow EMA: {slow_period}",
+            "MovingAverageStrategy")
 
     def calculate_indicators(self, data):
         """Calculate strategy indicators on OHLC data."""
         if len(data) < self.min_required_candles:
-            self.logger.warning(
+            DBLogger.log_event("WARNING",
                 f"Insufficient data for MA calculations. "
-                f"Need at least {self.min_required_candles} candles."
-            )
+                f"Need at least {self.min_required_candles} candles.",
+                "MovingAverageStrategy")
             return data
 
         # Calculate EMAs
@@ -192,7 +195,7 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
 
         # Check if we have sufficient data after calculations
         if data.empty or 'crossover' not in data.columns:
-            self.logger.warning("Insufficient data for analysis after calculations")
+            DBLogger.log_event("WARNING", "Insufficient data for analysis after calculations", "MovingAverageStrategy")
             return []
 
         signals = []
@@ -279,11 +282,11 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
             }
         )
 
-        self.logger.info(
+        DBLogger.log_event("INFO",
             f"Generated BUY signal for {self.symbol} at {entry_price}. "
             f"Fast EMA: {last_candle['fast_ema']:.2f}, Slow EMA: {last_candle['slow_ema']:.2f}, "
-            f"Stop: {stop_loss:.2f}, Target 1: {take_profit_1r:.2f}, Target 2: {take_profit_2r:.2f}"
-        )
+            f"Stop: {stop_loss:.2f}, Target 1: {take_profit_1r:.2f}, Target 2: {take_profit_2r:.2f}",
+            "MovingAverageStrategy")
 
         return signal
 
@@ -326,11 +329,11 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
             }
         )
 
-        self.logger.info(
+        DBLogger.log_event("INFO",
             f"Generated SELL signal for {self.symbol} at {entry_price}. "
             f"Fast EMA: {last_candle['fast_ema']:.2f}, Slow EMA: {last_candle['slow_ema']:.2f}, "
-            f"Stop: {stop_loss:.2f}, Target 1: {take_profit_1r:.2f}, Target 2: {take_profit_2r:.2f}"
-        )
+            f"Stop: {stop_loss:.2f}, Target 1: {take_profit_1r:.2f}, Target 2: {take_profit_2r:.2f}",
+            "MovingAverageStrategy")
 
         return signal
 
@@ -389,11 +392,11 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
             }
         )
 
-        self.logger.info(
+        DBLogger.log_event("INFO",
             f"Generated BUY signal for {self.symbol} at {entry_price} "
             f"(pullback to {pullback_type} in uptrend). "
-            f"Stop: {stop_loss:.2f}, Target 1: {take_profit_1r:.2f}, Target 2: {take_profit_2r:.2f}"
-        )
+            f"Stop: {stop_loss:.2f}, Target 1: {take_profit_1r:.2f}, Target 2: {take_profit_2r:.2f}",
+            "MovingAverageStrategy")
 
         return signal
 
@@ -451,10 +454,10 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
             }
         )
 
-        self.logger.info(
+        DBLogger.log_event("INFO",
             f"Generated SELL signal for {self.symbol} at {entry_price} "
             f"(pullback to {pullback_type} in downtrend). "
-            f"Stop: {stop_loss:.2f}, Target 1: {take_profit_1r:.2f}, Target 2: {take_profit_2r:.2f}"
-        )
+            f"Stop: {stop_loss:.2f}, Target 1: {take_profit_1r:.2f}, Target 2: {take_profit_2r:.2f}",
+            "MovingAverageStrategy")
 
         return signal
