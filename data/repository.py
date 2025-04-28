@@ -472,70 +472,70 @@ class AccountSnapshotRepository(BaseRepository):
             session.close()
 
         # data/repository.py (continued)
-        def get_snapshots_range(self, from_date, to_date=None):
-            """Get account snapshots for a specific date range.
+    def get_snapshots_range(self, from_date, to_date=None):
+        """Get account snapshots for a specific date range.
 
-            Args:
-                from_date (datetime): The start date
-                to_date (datetime, optional): The end date. Defaults to now.
+        Args:
+            from_date (datetime): The start date
+            to_date (datetime, optional): The end date. Defaults to now.
 
-            Returns:
-                list: Account snapshots in the date range
-            """
-            if to_date is None:
-                to_date = datetime.utcnow()
+        Returns:
+            list: Account snapshots in the date range
+        """
+        if to_date is None:
+            to_date = datetime.utcnow()
 
-            session = DatabaseSession.get_session()
-            try:
-                snapshots = session.query(AccountSnapshot).filter(
-                    AccountSnapshot.timestamp >= from_date,
-                    AccountSnapshot.timestamp <= to_date
-                ).order_by(AccountSnapshot.timestamp).all()
+        session = DatabaseSession.get_session()
+        try:
+            snapshots = session.query(AccountSnapshot).filter(
+                AccountSnapshot.timestamp >= from_date,
+                AccountSnapshot.timestamp <= to_date
+            ).order_by(AccountSnapshot.timestamp).all()
 
-                return snapshots
-            except Exception as e:
-                app_logger.error(f"Error getting account snapshots range: {str(e)}")
-                raise
-            finally:
-                session.close()
+            return snapshots
+        except Exception as e:
+            app_logger.error(f"Error getting account snapshots range: {str(e)}")
+            raise
+        finally:
+            session.close()
 
-        def get_daily_snapshots(self, days=30):
-            """Get one snapshot per day for the last N days.
+    def get_daily_snapshots(self, days=30):
+        """Get one snapshot per day for the last N days.
 
-            Args:
-                days (int, optional): Number of days to look back. Defaults to 30.
+        Args:
+            days (int, optional): Number of days to look back. Defaults to 30.
 
-            Returns:
-                list: Daily account snapshots
-            """
-            from_date = datetime.utcnow() - timedelta(days=days)
+        Returns:
+            list: Daily account snapshots
+        """
+        from_date = datetime.utcnow() - timedelta(days=days)
 
-            session = DatabaseSession.get_session()
-            try:
-                # This query gets one snapshot per day (the latest of each day)
-                # The specific implementation may vary depending on SQL Server version
-                # This is a simplified approach
-                snapshots = []
-                current_date = from_date.date()
-                end_date = datetime.utcnow().date()
+        session = DatabaseSession.get_session()
+        try:
+            # This query gets one snapshot per day (the latest of each day)
+            # The specific implementation may vary depending on SQL Server version
+            # This is a simplified approach
+            snapshots = []
+            current_date = from_date.date()
+            end_date = datetime.utcnow().date()
 
-                while current_date <= end_date:
-                    day_start = datetime.combine(current_date, datetime.min.time())
-                    day_end = datetime.combine(current_date, datetime.max.time())
+            while current_date <= end_date:
+                day_start = datetime.combine(current_date, datetime.min.time())
+                day_end = datetime.combine(current_date, datetime.max.time())
 
-                    snapshot = session.query(AccountSnapshot).filter(
-                        AccountSnapshot.timestamp >= day_start,
-                        AccountSnapshot.timestamp <= day_end
-                    ).order_by(desc(AccountSnapshot.timestamp)).first()
+                snapshot = session.query(AccountSnapshot).filter(
+                    AccountSnapshot.timestamp >= day_start,
+                    AccountSnapshot.timestamp <= day_end
+                ).order_by(desc(AccountSnapshot.timestamp)).first()
 
-                    if snapshot:
-                        snapshots.append(snapshot)
+                if snapshot:
+                    snapshots.append(snapshot)
 
-                    current_date += timedelta(days=1)
+                current_date += timedelta(days=1)
 
-                return snapshots
-            except Exception as e:
-                app_logger.error(f"Error getting daily account snapshots: {str(e)}")
-                raise
-            finally:
-                session.close()
+            return snapshots
+        except Exception as e:
+            app_logger.error(f"Error getting daily account snapshots: {str(e)}")
+            raise
+        finally:
+            session.close()
