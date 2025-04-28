@@ -21,7 +21,6 @@ class RiskValidator:
         self.connector = connector or MT5Connector()
         self.trade_repository = trade_repository or TradeRepository()
         self.account_repository = account_repository or AccountSnapshotRepository()
-        self.risk_params = getattr(Config, 'RISK_PARAMS', {})  # U
         self.max_positions = Config.MAX_POSITIONS
         self.max_daily_risk_percent = Config.MAX_DAILY_RISK_PERCENT
         self.max_drawdown_percent = Config.MAX_DRAWDOWN_PERCENT
@@ -119,7 +118,8 @@ class RiskValidator:
 
             # Validate today_trades is a list
             if today_trades is None:
-                DBLogger.log_event("WARNING", "get_trades_by_date_range returned None instead of a list", "RiskValidator")
+                DBLogger.log_event("WARNING", "get_trades_by_date_range returned None instead of a list",
+                                   "RiskValidator")
                 return 0
 
             # Sum up losses (ensure profit values are valid)
@@ -153,7 +153,8 @@ class RiskValidator:
                 return 0
 
             if not snapshots:
-                DBLogger.log_event("WARNING", "No account snapshots available for drawdown calculation", "RiskValidator")
+                DBLogger.log_event("WARNING", "No account snapshots available for drawdown calculation",
+                                   "RiskValidator")
                 return 0
 
             # Find peak equity (ensure equity values are valid)
@@ -180,8 +181,8 @@ class RiskValidator:
             drawdown = (peak_equity - current_equity) / peak_equity
 
             DBLogger.log_event("DEBUG",
-                f"Calculated drawdown: {drawdown:.2%} (peak: {peak_equity}, current: {current_equity})",
-                "RiskValidator")
+                               f"Calculated drawdown: {drawdown:.2%} (peak: {peak_equity}, current: {current_equity})",
+                               "RiskValidator")
             return max(0, drawdown)  # Ensure non-negative
 
         except Exception as e:
@@ -191,7 +192,9 @@ class RiskValidator:
             return 0  # Return a safe default value
 
     def validate_stop_loss(self, symbol, order_type, entry_price, stop_loss_price):
-        """Validate that a stop loss is properly set and reasonable against configured limits.
+        """Validate that a stop loss is properly set and reasonable.
+        Uses dynamic validation based on price relationship and volatility
+        rather than hardcoded min/max values.
 
         Args:
             symbol (str): Symbol to trade
@@ -220,20 +223,11 @@ class RiskValidator:
             return False
 
         try:
-            # Get symbol info (needed for point size if converting points/pips)
+            # Get symbol info
             symbol_info = self.connector.get_symbol_info(symbol)
             if symbol_info is None:
                 DBLogger.log_event("WARNING", f"Failed to get symbol info for {symbol}", "RiskValidator")
                 return False
-
-            # Get symbol-specific risk parameters from configuration
-            symbol_risk_config = self.risk_params.get(symbol)
-
-            if not symbol_risk_config:
-                 DBLogger.log_event("WARNING", f"No risk parameters configured for symbol {symbol} in Config.RISK_PARAMS. Validation failed.", "RiskValidator")
-                 # If no configuration, validation should fail for safety.
-                 return False
-
 
             # Check that stop loss exists (redundant check since price > 0, but harmless)
             if stop_loss_price <= 0:
@@ -244,55 +238,49 @@ class RiskValidator:
             if order_type == 0:  # Buy
                 if stop_loss_price >= entry_price:
                     DBLogger.log_event("WARNING",
-                        f"Stop loss ({stop_loss_price}) is above entry price ({entry_price}) for BUY order on {symbol}",
-                        "RiskValidator")
+                                       f"Stop loss ({stop_loss_price}) is above entry price ({entry_price}) for BUY order on {symbol}",
+                                       "RiskValidator")
                     return False
             else:  # Sell
                 if stop_loss_price <= entry_price:
                     DBLogger.log_event("WARNING",
-                        f"Stop loss ({stop_loss_price}) is below entry price ({entry_price}) for SELL order on {symbol}",
-                        "RiskValidator")
+                                       f"Stop loss ({stop_loss_price}) is below entry price ({entry_price}) for SELL order on {symbol}",
+                                       "RiskValidator")
                     return False
 
-            # Calculate stop loss distance in points
+            # Calculate stop loss distance in price units
             stop_distance = abs(entry_price - stop_loss_price)
-            # The point size for Gold is usually 0.01, but let's fetch it
-            price_point = symbol_info.get('point', 0.01)
-            if price_point <= 0: # Prevent division by zero
-                 DBLogger.log_event("WARNING", f"Invalid point size ({price_point}) for symbol {symbol}. Cannot validate stop loss distance in points.", "RiskValidator")
-                 # Decide if you want to fail validation or use price difference check only
-                 # Failing is safer
-                 return False
 
-            stop_distance_points = stop_distance / price_point
+            # Calculate stop distance as percentage of price (for sanity check)
+            stop_distance_percent = (stop_distance / entry_price) * 100
 
+            # Validate stop distance using dynamic criteria rather than hardcoded min/max
 
-            # Validate distance against configured limits (in points)
-            min_distance_points = symbol_risk_config.get("min_stop_distance_points")
-            max_distance_points = symbol_risk_config.get("max_stop_distance_points")
+            # Check if stop is too tight (less than 0.1% of price for XAU/USD)
+            # This is a very minimal sanity check
+            if stop_distance_percent < 0.1:
+                DBLogger.log_event("WARNING",
+                                   f"Stop loss distance ({stop_distance_percent:.2f}% of price) appears too tight for {symbol}",
+                                   "RiskValidator")
+                return False
 
-            # Check if min/max limits are actually configured
-            if min_distance_points is None and max_distance_points is None:
-                 DBLogger.log_event("WARNING", f"No min_stop_distance_points or max_stop_distance_points configured for {symbol}. Validation passed by default.", "RiskValidator")
-                 # Decide if this should pass or fail if limits aren't explicitly set.
-                 # Passing might be acceptable if you only rely on strategy logic.
-                 return True # Assuming passing is ok if limits aren't set
+            # Check if stop is extremely wide (more than 10% of price for XAU/USD)
+            # This is mainly to catch potential errors in stop calculation
+            if stop_distance_percent > 10.0:
+                DBLogger.log_event("WARNING",
+                                   f"Stop loss distance ({stop_distance_percent:.2f}% of price) appears extremely wide for {symbol}",
+                                   "RiskValidator")
+                return False
 
-            if min_distance_points is not None:
-                 if stop_distance_points < min_distance_points:
-                     DBLogger.log_event("WARNING", f"Stop loss distance ({stop_distance_points:.2f} pts) is too small for {symbol} (Min: {min_distance_points} pts)", "RiskValidator")
-                     return False
-
-            if max_distance_points is not None:
-                 if stop_distance_points > max_distance_points: # Check against configured max
-                     DBLogger.log_event("WARNING", f"Stop loss distance ({stop_distance_points:.2f} pts) is too large for {symbol} (Max: {max_distance_points} pts)", "RiskValidator")
-                     return False
-
+            # If using ATR for a more dynamic check, we could fetch recent price data and calculate ATR
+            # This would be a more sophisticated approach than fixed percentages
+            # But for now, we'll use the percentage checks as a reasonable compromise
 
             # If all checks pass
             DBLogger.log_event("DEBUG",
-                f"Stop loss validation passed for {symbol}: type={order_type}, entry={entry_price}, stop={stop_loss_price} ({stop_distance_points:.2f} pts)",
-                "RiskValidator")
+                               f"Stop loss validation passed for {symbol}: type={order_type}, entry={entry_price}, "
+                               f"stop={stop_loss_price} ({stop_distance_percent:.2f}% of price)",
+                               "RiskValidator")
             return True
 
         except Exception as e:

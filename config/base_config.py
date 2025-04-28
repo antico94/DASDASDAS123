@@ -73,17 +73,6 @@ class BaseConfig:
     LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     LOG_FILE = "trading_bot.log"
 
-    RISK_PARAMS = {
-        "XAUUSD": {
-            "min_stop_distance_points": 3.0,  # Example: Minimum stop loss distance in points (e.g., $3 / 0.01 = 300 points) - ADJUST AS NEEDED
-            "max_stop_distance_points": 6500.0 # Example: Maximum stop loss distance in points (e.g., $65 / 0.01 = 6500 points) - ADJUST AS NEEDED
-        },
-        # Add risk parameters for other symbols here if needed
-        # "EURUSD": {
-        #     "min_stop_distance_points": 100, # Example: 10 pips * 10 points/pip = 100 points
-        #     "max_stop_distance_points": 1000 # Example: 100 pips * 10 points/pip = 1000 points
-        # },
-    }
 
     @property
     def DATABASE_URI(self):
