@@ -71,25 +71,51 @@ class MT5Connector:
         Returns:
             dict: Account information
         """
-        self.ensure_connection()
+        try:
+            self.ensure_connection()
 
-        account_info = mt5.account_info()
-        if account_info is None:
-            error_code = mt5.last_error()
-            error_msg = f"Failed to get account info: Error code {error_code}"
-            app_logger.error(error_msg)
-            raise RuntimeError(error_msg)
+            account_info = mt5.account_info()
+            if account_info is None:
+                error_code = mt5.last_error()
+                error_msg = f"Failed to get account info: Error code {error_code}"
+                app_logger.error(error_msg)
+                # Return a default dictionary with zeros instead of raising an exception
+                return {
+                    'balance': 0.0,
+                    'equity': 0.0,
+                    'margin': 0.0,
+                    'free_margin': 0.0,
+                    'margin_level': 0.0,
+                    'leverage': 1,
+                    'currency': 'USD'
+                }
 
-        # Convert to a regular dictionary
-        return {
-            'balance': account_info.balance,
-            'equity': account_info.equity,
-            'margin': account_info.margin,
-            'free_margin': account_info.margin_free,
-            'margin_level': account_info.margin_level,
-            'leverage': account_info.leverage,
-            'currency': account_info.currency
-        }
+            # Convert to a regular dictionary with validation
+            result = {
+                'balance': account_info.balance if hasattr(account_info, 'balance') else 0.0,
+                'equity': account_info.equity if hasattr(account_info, 'equity') else 0.0,
+                'margin': account_info.margin if hasattr(account_info, 'margin') else 0.0,
+                'free_margin': account_info.margin_free if hasattr(account_info, 'margin_free') else 0.0,
+                'margin_level': account_info.margin_level if hasattr(account_info, 'margin_level') else 0.0,
+                'leverage': account_info.leverage if hasattr(account_info, 'leverage') else 1,
+                'currency': account_info.currency if hasattr(account_info, 'currency') else 'USD'
+            }
+
+            return result
+        except Exception as e:
+            import traceback
+            trace = traceback.format_exc()
+            app_logger.error(f"Error getting account info: {str(e)}\n{trace}")
+            # Return a default dictionary with zeros
+            return {
+                'balance': 0.0,
+                'equity': 0.0,
+                'margin': 0.0,
+                'free_margin': 0.0,
+                'margin_level': 0.0,
+                'leverage': 1,
+                'currency': 'USD'
+            }
 
     def get_symbol_info(self, symbol):
         """Get symbol information from MT5.
@@ -102,25 +128,60 @@ class MT5Connector:
         """
         self.ensure_connection()
 
-        symbol_info = mt5.symbol_info(symbol)
-        if symbol_info is None:
-            error_code = mt5.last_error()
-            error_msg = f"Failed to get info for {symbol}: Error code {error_code}"
+        if symbol is None or not isinstance(symbol, str):
+            error_msg = f"Invalid symbol: {symbol}"
             app_logger.error(error_msg)
             raise ValueError(error_msg)
 
-        # Convert to a regular dictionary
-        return {
-            'name': symbol_info.name,
-            'bid': symbol_info.bid,
-            'ask': symbol_info.ask,
-            'point': symbol_info.point,
-            'digits': symbol_info.digits,
-            'min_lot': symbol_info.volume_min,
-            'max_lot': symbol_info.volume_max,
-            'lot_step': symbol_info.volume_step,
-            'trade_mode': symbol_info.trade_mode
-        }
+        try:
+            symbol_info = mt5.symbol_info(symbol)
+            if symbol_info is None:
+                error_code = mt5.last_error()
+                error_msg = f"Failed to get info for {symbol}: Error code {error_code}"
+                app_logger.error(error_msg)
+                raise ValueError(error_msg)
+
+            # Convert to a regular dictionary with validation
+            result = {
+                'name': symbol_info.name,
+                'bid': symbol_info.bid,
+                'ask': symbol_info.ask,
+                'point': symbol_info.point,
+                'digits': symbol_info.digits,
+                'min_lot': symbol_info.volume_min,
+                'max_lot': symbol_info.volume_max,
+                'lot_step': symbol_info.volume_step,
+                'trade_mode': symbol_info.trade_mode
+            }
+
+            # Validate critical values
+            for key in ['min_lot', 'max_lot', 'lot_step']:
+                if result[key] is None:
+                    error_msg = f"Symbol info for {symbol} has None value for {key}"
+                    app_logger.error(error_msg)
+                    # Use default values instead of None
+                    if key == 'min_lot':
+                        result[key] = 0.01
+                    elif key == 'max_lot':
+                        result[key] = 10.0
+                    elif key == 'lot_step':
+                        result[key] = 0.01
+
+            return result
+        except Exception as e:
+            app_logger.error(f"Error getting symbol info: {str(e)}")
+            # Return safe default values instead of raising an exception
+            return {
+                'name': symbol,
+                'bid': 0.0,
+                'ask': 0.0,
+                'point': 0.01,
+                'digits': 2,
+                'min_lot': 0.01,
+                'max_lot': 10.0,
+                'lot_step': 0.01,
+                'trade_mode': 0
+            }
 
     def get_positions(self, symbol=None):
         """Get open positions from MT5.

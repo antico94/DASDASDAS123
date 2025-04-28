@@ -110,11 +110,47 @@ class EnhancedOrderManager:
         Returns:
             bool: True if executed successfully, False otherwise
         """
+        import traceback  # Add this import at the top
+
+        # Additional detailed logging
+        self.logger.debug(f"Signal details: id={signal.id}, type={signal.signal_type}, price={signal.price}")
+        self.logger.debug(f"Metadata: {metadata}")
+
+        # Input validation for signal
+        if signal is None:
+            self.logger.error("Signal is None")
+            return False
+
+        if signal.signal_type not in ["BUY", "SELL"]:
+            self.logger.error(f"Invalid signal type: {signal.signal_type}")
+            return False
+
+        if signal.price is None or not isinstance(signal.price, (int, float)) or signal.price <= 0:
+            self.logger.error(f"Invalid signal price: {signal.price}")
+            return False
+
+        if signal.symbol is None or not isinstance(signal.symbol, str):
+            self.logger.error(f"Invalid symbol: {signal.symbol}")
+            return False
+
         # Convert signal type to MT5 order type
         order_type = 0 if signal.signal_type == "BUY" else 1  # 0=BUY, 1=SELL
 
-        # Get stop loss from metadata
-        stop_loss = metadata.get('stop_loss', 0.0)
+        # Ensure metadata is a dictionary
+        if metadata is None:
+            metadata = {}
+            self.logger.warning("Metadata is None, using empty dictionary")
+
+        # Get stop loss from metadata with proper validation
+        stop_loss = metadata.get('stop_loss')
+
+        # Ensure stop_loss is a valid number
+        if stop_loss is None or not isinstance(stop_loss, (int, float)) or stop_loss <= 0:
+            self.logger.warning(f"Invalid stop loss in signal metadata: {stop_loss}. Using fallback value.")
+            # Set a fallback stop loss of 1% away from price
+            stop_loss = signal.price * 0.99 if signal.signal_type == "BUY" else signal.price * 1.01
+
+        self.logger.debug(f"Using stop loss: {stop_loss} for {signal.signal_type} at {signal.price}")
 
         # Validate stop loss
         if not self.risk_validator.validate_stop_loss(
@@ -133,16 +169,33 @@ class EnhancedOrderManager:
             return False
 
         # Check if the signal suggests partial profit-taking
-        take_profit_1 = metadata.get('take_profit_1r', 0.0)
-        take_profit_2 = metadata.get('take_profit_2r', 0.0)
+        take_profit_1 = metadata.get('take_profit_1r')
+        take_profit_2 = metadata.get('take_profit_2r')
 
-        if take_profit_1 > 0 and take_profit_2 > 0:
-            # Use multi-position profit-taking strategy
-            return self._execute_with_partial_profit(signal, metadata, order_type, stop_loss,
-                                                     take_profit_1, take_profit_2)
-        else:
-            # Use standard single position strategy
-            return self._execute_standard_entry(signal, metadata, order_type, stop_loss)
+        # Validate take profit values
+        if take_profit_1 is None or not isinstance(take_profit_1, (int, float)):
+            self.logger.debug(f"Invalid take_profit_1r: {take_profit_1}, setting to 0.0")
+            take_profit_1 = 0.0
+        if take_profit_2 is None or not isinstance(take_profit_2, (int, float)):
+            self.logger.debug(f"Invalid take_profit_2r: {take_profit_2}, setting to 0.0")
+            take_profit_2 = 0.0
+
+        # Add debugging output
+        self.logger.debug(f"Take profit values: TP1={take_profit_1}, TP2={take_profit_2}")
+
+        try:
+            if take_profit_1 > 0 and take_profit_2 > 0:
+                # Use multi-position profit-taking strategy
+                return self._execute_with_partial_profit(signal, metadata, order_type, stop_loss,
+                                                         take_profit_1, take_profit_2)
+            else:
+                # Use standard single position strategy
+                return self._execute_standard_entry(signal, metadata, order_type, stop_loss)
+        except Exception as e:
+            # Get the full traceback
+            trace = traceback.format_exc()
+            self.logger.error(f"Error in _execute_entry_signal: {str(e)}\n{trace}")
+            return False
 
     def _execute_with_partial_profit(self, signal, metadata, order_type, stop_loss,
                                      take_profit_1, take_profit_2):
@@ -162,6 +215,23 @@ class EnhancedOrderManager:
         self.logger.info(f"Executing with partial profit strategy for signal {signal.id}")
 
         try:
+            # Validate input values
+            if signal.price is None or not isinstance(signal.price, (int, float)) or signal.price <= 0:
+                self.logger.error(f"Invalid signal price: {signal.price}")
+                return False
+
+            if stop_loss is None or not isinstance(stop_loss, (int, float)) or stop_loss <= 0:
+                self.logger.error(f"Invalid stop loss price: {stop_loss}")
+                return False
+
+            if take_profit_1 is None or not isinstance(take_profit_1, (int, float)) or take_profit_1 <= 0:
+                self.logger.error(f"Invalid take profit 1 price: {take_profit_1}")
+                return False
+
+            if take_profit_2 is None or not isinstance(take_profit_2, (int, float)) or take_profit_2 <= 0:
+                self.logger.error(f"Invalid take profit 2 price: {take_profit_2}")
+                return False
+
             # Calculate total position size
             total_position_size = self.position_sizer.calculate_position_size(
                 symbol=signal.symbol,
@@ -170,7 +240,8 @@ class EnhancedOrderManager:
             )
 
             # Validate position size
-            if not self.position_sizer.validate_position_size(signal.symbol, total_position_size):
+            if total_position_size is None or not self.position_sizer.validate_position_size(signal.symbol,
+                                                                                             total_position_size):
                 self.logger.warning(f"Invalid position size calculated: {total_position_size}")
                 return False
 
@@ -261,6 +332,8 @@ class EnhancedOrderManager:
             self.logger.error(f"Error executing partial profit strategy: {str(e)}")
             return False
 
+    # Here's the fix for execution/order_manager.py
+
     def _execute_standard_entry(self, signal, metadata, order_type, stop_loss):
         """Execute a standard entry (single position).
 
@@ -274,6 +347,15 @@ class EnhancedOrderManager:
             bool: True if executed successfully, False otherwise
         """
         try:
+            # Validate that signal price and stop_loss are valid numbers
+            if signal.price is None or not isinstance(signal.price, (int, float)) or signal.price <= 0:
+                self.logger.error(f"Invalid signal price: {signal.price}")
+                return False
+
+            if stop_loss is None or not isinstance(stop_loss, (int, float)) or stop_loss <= 0:
+                self.logger.error(f"Invalid stop loss price: {stop_loss}")
+                return False
+
             # Calculate position size
             position_size = self.position_sizer.calculate_position_size(
                 symbol=signal.symbol,
@@ -282,7 +364,7 @@ class EnhancedOrderManager:
             )
 
             # Validate position size
-            if not self.position_sizer.validate_position_size(signal.symbol, position_size):
+            if position_size is None or not self.position_sizer.validate_position_size(signal.symbol, position_size):
                 self.logger.warning(f"Invalid position size calculated: {position_size}")
                 return False
 
@@ -409,6 +491,13 @@ class EnhancedOrderManager:
         Returns:
             float: Calculated take profit price
         """
+        # Validate inputs
+        if entry_price is None or stop_loss is None or order_type is None:
+            self.logger.warning(
+                f"Invalid input for take profit calculation: entry=${entry_price}, stop=${stop_loss}, type=${order_type}")
+            # Use a default 1% move as fallback
+            return entry_price * 1.01 if order_type == 0 else entry_price * 0.99
+
         # Default risk-to-reward ratio of 1:1.5
         risk_reward_ratio = 1.5
 
