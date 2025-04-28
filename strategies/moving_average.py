@@ -197,6 +197,14 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
         take_profit_1r = entry_price + risk  # 1:1 reward:risk for first target
         take_profit_2r = entry_price + (risk * 2)  # 2:1 reward:risk for second target
 
+        # Ensure risk-reward ratio is valid
+        if risk <= 0 or (entry_price - stop_loss) / entry_price > 0.03:  # Risk more than 3% of price
+            self.logger.warning(
+                f"Invalid risk-reward setup: entry={entry_price:.2f}, stop={stop_loss:.2f}, "
+                f"risk={risk:.2f}, risk%={(risk/entry_price)*100:.2f}%"
+            )
+            return None
+
         signal = self.create_signal(
             signal_type="BUY",
             price=entry_price,
@@ -216,7 +224,7 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
         self.logger.info(
             f"Generated BUY signal for {self.symbol} at {entry_price}. "
             f"Fast EMA: {last_candle['fast_ema']:.2f}, Slow EMA: {last_candle['slow_ema']:.2f}, "
-            f"Stop: {stop_loss:.2f}, Target 1: {take_profit_1r:.2f}"
+            f"Stop: {stop_loss:.2f}, Target 1: {take_profit_1r:.2f}, Target 2: {take_profit_2r:.2f}"
         )
 
         return signal
@@ -243,10 +251,18 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
             # Use ATR-based stop instead
             stop_loss = entry_price + (last_candle['atr'] * 1.5)
 
-        # Calculate take profit levels using reward:risk ratio
+        # FIXED: Calculate take profit levels using reward:risk ratio
         risk = stop_loss - entry_price
         take_profit_1r = entry_price - risk  # 1:1 reward:risk for first target
         take_profit_2r = entry_price - (risk * 2)  # 2:1 reward:risk for second target
+
+        # Ensure risk-reward ratio is valid
+        if risk <= 0 or (stop_loss - entry_price) / entry_price > 0.03:  # Risk more than 3% of price
+            self.logger.warning(
+                f"Invalid risk-reward setup: entry={entry_price:.2f}, stop={stop_loss:.2f}, "
+                f"risk={risk:.2f}, risk%={(risk/entry_price)*100:.2f}%"
+            )
+            return None
 
         signal = self.create_signal(
             signal_type="SELL",
@@ -267,7 +283,7 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
         self.logger.info(
             f"Generated SELL signal for {self.symbol} at {entry_price}. "
             f"Fast EMA: {last_candle['fast_ema']:.2f}, Slow EMA: {last_candle['slow_ema']:.2f}, "
-            f"Stop: {stop_loss:.2f}, Target 1: {take_profit_1r:.2f}"
+            f"Stop: {stop_loss:.2f}, Target 1: {take_profit_1r:.2f}, Target 2: {take_profit_2r:.2f}"
         )
 
         return signal
@@ -304,6 +320,14 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
         take_profit_1r = entry_price + risk  # 1:1 reward:risk for first target
         take_profit_2r = entry_price + (risk * 2)  # 2:1 reward:risk for second target
 
+        # Ensure risk-reward ratio is valid
+        if risk <= 0 or take_profit_1r <= entry_price:
+            self.logger.warning(
+                f"Invalid risk-reward setup: entry={entry_price:.2f}, stop={stop_loss:.2f}, "
+                f"tp1={take_profit_1r:.2f}, risk={risk:.2f}"
+            )
+            return None
+
         signal = self.create_signal(
             signal_type="BUY",
             price=entry_price,
@@ -323,7 +347,7 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
         self.logger.info(
             f"Generated BUY signal for {self.symbol} at {entry_price} "
             f"(pullback to fast EMA in uptrend). "
-            f"Stop: {stop_loss:.2f}, Target 1: {take_profit_1r:.2f}"
+            f"Stop: {stop_loss:.2f}, Target 1: {take_profit_1r:.2f}, Target 2: {take_profit_2r:.2f}"
         )
 
         return signal
@@ -355,10 +379,18 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
             # Use ATR-based stop instead
             stop_loss = entry_price + (last_candle['atr'] * 1.5)
 
-        # Calculate take profit levels using reward:risk ratio
+        # FIXED: Calculate take profit levels using reward:risk ratio properly for SELL
         risk = stop_loss - entry_price
         take_profit_1r = entry_price - risk  # 1:1 reward:risk for first target
         take_profit_2r = entry_price - (risk * 2)  # 2:1 reward:risk for second target
+
+        # Ensure risk-reward ratio is valid
+        if risk <= 0 or take_profit_1r >= entry_price:
+            self.logger.warning(
+                f"Invalid risk-reward setup: entry={entry_price:.2f}, stop={stop_loss:.2f}, "
+                f"tp1={take_profit_1r:.2f}, risk={risk:.2f}"
+            )
+            return None
 
         signal = self.create_signal(
             signal_type="SELL",
@@ -379,7 +411,7 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
         self.logger.info(
             f"Generated SELL signal for {self.symbol} at {entry_price} "
             f"(pullback to fast EMA in downtrend). "
-            f"Stop: {stop_loss:.2f}, Target 1: {take_profit_1r:.2f}"
+            f"Stop: {stop_loss:.2f}, Target 1: {take_profit_1r:.2f}, Target 2: {take_profit_2r:.2f}"
         )
 
         return signal

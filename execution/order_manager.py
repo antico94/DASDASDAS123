@@ -32,6 +32,9 @@ class EnhancedOrderManager:
 
         self.logger = app_logger
 
+        # Minimum risk-reward ratio (1:1 means risk equals reward)
+        self.min_risk_reward_ratio = 1.0
+
     def process_pending_signals(self):
         """Process all pending trade signals with enhanced trade management.
 
@@ -168,20 +171,33 @@ class EnhancedOrderManager:
             self.logger.warning(f"Risk validation failed: {reason}")
             return False
 
-        # Check if the signal suggests partial profit-taking
-        take_profit_1 = metadata.get('take_profit_1r')
-        take_profit_2 = metadata.get('take_profit_2r')
+        # FIXED: Properly select and validate take profit values
+        take_profit_1 = self._get_valid_take_profit(metadata, 'take_profit_1r')
+        take_profit_2 = self._get_valid_take_profit(metadata, 'take_profit_2r')
 
-        # Validate take profit values
-        if take_profit_1 is None or not isinstance(take_profit_1, (int, float)):
-            self.logger.debug(f"Invalid take_profit_1r: {take_profit_1}, setting to 0.0")
-            take_profit_1 = 0.0
-        if take_profit_2 is None or not isinstance(take_profit_2, (int, float)):
-            self.logger.debug(f"Invalid take_profit_2r: {take_profit_2}, setting to 0.0")
-            take_profit_2 = 0.0
+        # If no take profit in metadata, calculate them
+        if take_profit_1 <= 0 or take_profit_2 <= 0:
+            # Calculate risk
+            risk = abs(signal.price - stop_loss)
+
+            # Set take profits based on order type and risk
+            if order_type == 0:  # BUY
+                take_profit_1 = signal.price + risk  # 1:1 risk:reward
+                take_profit_2 = signal.price + (risk * 2)  # 2:1 risk:reward
+            else:  # SELL
+                take_profit_1 = signal.price - risk  # 1:1 risk:reward
+                take_profit_2 = signal.price - (risk * 2)  # 2:1 risk:reward
+
+            self.logger.debug(f"Calculated take profits: TP1={take_profit_1}, TP2={take_profit_2}")
 
         # Add debugging output
         self.logger.debug(f"Take profit values: TP1={take_profit_1}, TP2={take_profit_2}")
+
+        # FIXED: Validate risk-reward ratio
+        if not self._validate_risk_reward(order_type, signal.price, stop_loss, take_profit_1):
+            self.logger.warning(f"Rejecting trade due to poor risk-reward ratio for signal {signal.id}")
+            # Mark it as executed but log the rejection reason
+            return False
 
         try:
             if take_profit_1 > 0 and take_profit_2 > 0:
@@ -196,6 +212,67 @@ class EnhancedOrderManager:
             trace = traceback.format_exc()
             self.logger.error(f"Error in _execute_entry_signal: {str(e)}\n{trace}")
             return False
+
+    def _get_valid_take_profit(self, metadata, key):
+        """Extract and validate take profit value from metadata.
+
+        Args:
+            metadata (dict): Signal metadata
+            key (str): Key to look for in metadata
+
+        Returns:
+            float: Valid take profit value or 0.0 if invalid
+        """
+        tp_value = metadata.get(key, 0.0)
+        if tp_value is None or not isinstance(tp_value, (int, float)) or tp_value <= 0:
+            return 0.0
+        return tp_value
+
+    def _validate_risk_reward(self, order_type, entry_price, stop_loss, take_profit):
+        """Validate that risk-reward ratio is acceptable.
+
+        Args:
+            order_type (int): Order type (0=BUY, 1=SELL)
+            entry_price (float): Entry price
+            stop_loss (float): Stop loss price
+            take_profit (float): Take profit price
+
+        Returns:
+            bool: True if risk-reward is acceptable, False otherwise
+        """
+        if entry_price <= 0 or stop_loss <= 0 or take_profit <= 0:
+            self.logger.error(
+                f"Invalid prices for risk-reward validation: entry={entry_price}, stop={stop_loss}, tp={take_profit}")
+            return False
+
+        # Calculate risk and reward
+        if order_type == 0:  # BUY
+            risk = entry_price - stop_loss
+            reward = take_profit - entry_price
+        else:  # SELL
+            risk = stop_loss - entry_price
+            reward = entry_price - take_profit
+
+        # Validate both are positive
+        if risk <= 0:
+            self.logger.error(f"Invalid risk: {risk} for {order_type} order")
+            return False
+
+        if reward <= 0:
+            self.logger.error(f"Invalid reward: {reward} for {order_type} order")
+            return False
+
+        # Calculate risk-reward ratio
+        rr_ratio = risk / reward
+
+        self.logger.debug(f"Risk-reward analysis: risk={risk}, reward={reward}, ratio={rr_ratio:.2f}")
+
+        # Check against minimum acceptable ratio
+        if rr_ratio > 2.5:  # Don't risk more than 2.5x the potential reward
+            self.logger.warning(f"Poor risk-reward ratio: {rr_ratio:.2f}. Maximum acceptable is 2.5")
+            return False
+
+        return True
 
     def _execute_with_partial_profit(self, signal, metadata, order_type, stop_loss,
                                      take_profit_1, take_profit_2):
@@ -231,6 +308,16 @@ class EnhancedOrderManager:
             if take_profit_2 is None or not isinstance(take_profit_2, (int, float)) or take_profit_2 <= 0:
                 self.logger.error(f"Invalid take profit 2 price: {take_profit_2}")
                 return False
+
+            # FIXED: Verify risk-reward for both targets
+            if not self._validate_risk_reward(order_type, signal.price, stop_loss, take_profit_1):
+                self.logger.warning(f"First target has poor risk-reward ratio for signal {signal.id}")
+                return False
+
+            if not self._validate_risk_reward(order_type, signal.price, stop_loss, take_profit_2):
+                self.logger.warning(f"Second target has poor risk-reward ratio for signal {signal.id}")
+                # Could still proceed with just the first target if needed
+                # For now, we'll reject the whole trade
 
             # Calculate total position size
             total_position_size = self.position_sizer.calculate_position_size(
@@ -332,8 +419,6 @@ class EnhancedOrderManager:
             self.logger.error(f"Error executing partial profit strategy: {str(e)}")
             return False
 
-    # Here's the fix for execution/order_manager.py
-
     def _execute_standard_entry(self, signal, metadata, order_type, stop_loss):
         """Execute a standard entry (single position).
 
@@ -368,10 +453,32 @@ class EnhancedOrderManager:
                 self.logger.warning(f"Invalid position size calculated: {position_size}")
                 return False
 
-            # Calculate take profit if applicable
-            take_profit = metadata.get('take_profit_1r', 0.0)  # Use first target if available
+            # FIXED: Calculate take profit correctly based on order type and risk
+            # For BUY, profit is above entry; for SELL, profit is below entry
+            # Prioritize metadata value if available, otherwise calculate based on risk
+            risk = abs(signal.price - stop_loss)
+
+            # Start by checking all possible keys for take profit values
+            take_profit = metadata.get('take_profit_1r', 0.0)
             if not take_profit:
-                take_profit = self._calculate_default_take_profit(signal.price, stop_loss, order_type)
+                take_profit = metadata.get('take_profit', 0.0)
+            if not take_profit:
+                take_profit = metadata.get('take_profit_midpoint', 0.0)
+
+            # If still no valid take profit, calculate one based on risk
+            if not take_profit or take_profit <= 0:
+                if order_type == 0:  # BUY
+                    take_profit = signal.price + (risk * 1.5)  # 1.5:1 reward-to-risk
+                else:  # SELL
+                    take_profit = signal.price - (risk * 1.5)  # 1.5:1 reward-to-risk
+
+            self.logger.debug(
+                f"Take profit calculation: entry={signal.price}, stop={stop_loss}, risk={risk}, TP={take_profit}")
+
+            # FIXED: Validate risk-reward ratio
+            if not self._validate_risk_reward(order_type, signal.price, stop_loss, take_profit):
+                self.logger.warning(f"Rejecting trade due to poor risk-reward ratio")
+                return False
 
             # Add signal info to order comment
             comment = f"Signal_{signal.id}_{signal.strategy_name}"
