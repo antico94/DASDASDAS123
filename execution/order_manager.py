@@ -32,9 +32,6 @@ class EnhancedOrderManager:
 
         self.logger = app_logger
 
-        # Minimum risk-reward ratio (1:1 means risk equals reward)
-        self.min_risk_reward_ratio = 1.0
-
     def process_pending_signals(self):
         """Process all pending trade signals with enhanced trade management.
 
@@ -113,13 +110,7 @@ class EnhancedOrderManager:
         Returns:
             bool: True if executed successfully, False otherwise
         """
-        import traceback  # Add this import at the top
-
-        # Additional detailed logging
-        self.logger.debug(f"Signal details: id={signal.id}, type={signal.signal_type}, price={signal.price}")
-        self.logger.debug(f"Metadata: {metadata}")
-
-        # Input validation for signal
+        # Input validation
         if signal is None:
             self.logger.error("Signal is None")
             return False
@@ -144,16 +135,11 @@ class EnhancedOrderManager:
             metadata = {}
             self.logger.warning("Metadata is None, using empty dictionary")
 
-        # Get stop loss from metadata with proper validation
-        stop_loss = metadata.get('stop_loss')
+        # Calculate stop loss based on strategy
+        stop_loss = self._calculate_strategy_stop_loss(signal, metadata, order_type)
 
-        # Ensure stop_loss is a valid number
-        if stop_loss is None or not isinstance(stop_loss, (int, float)) or stop_loss <= 0:
-            self.logger.warning(f"Invalid stop loss in signal metadata: {stop_loss}. Using fallback value.")
-            # Set a fallback stop loss of 1% away from price
-            stop_loss = signal.price * 0.99 if signal.signal_type == "BUY" else signal.price * 1.01
-
-        self.logger.debug(f"Using stop loss: {stop_loss} for {signal.signal_type} at {signal.price}")
+        # Log the stop loss calculation
+        self.logger.debug(f"Calculated stop loss: {stop_loss} for {signal.signal_type} signal")
 
         # Validate stop loss
         if not self.risk_validator.validate_stop_loss(
@@ -171,197 +157,337 @@ class EnhancedOrderManager:
             self.logger.warning(f"Risk validation failed: {reason}")
             return False
 
-        # FIXED: Properly select and validate take profit values
-        take_profit_1 = self._get_valid_take_profit(metadata, 'take_profit_1r')
-        take_profit_2 = self._get_valid_take_profit(metadata, 'take_profit_2r')
+        # Calculate position size based on risk
+        atr_value = metadata.get('atr', None)
+        position_size = self.position_sizer.calculate_position_size(
+            symbol=signal.symbol,
+            entry_price=signal.price,
+            stop_loss_price=stop_loss,
+            atr_value=atr_value
+        )
 
-        # If no take profit in metadata, calculate them
-        if take_profit_1 <= 0 or take_profit_2 <= 0:
-            # Calculate risk
-            risk = abs(signal.price - stop_loss)
-
-            # Set take profits based on order type and risk
-            if order_type == 0:  # BUY
-                take_profit_1 = signal.price + risk  # 1:1 risk:reward
-                take_profit_2 = signal.price + (risk * 2)  # 2:1 risk:reward
-            else:  # SELL
-                take_profit_1 = signal.price - risk  # 1:1 risk:reward
-                take_profit_2 = signal.price - (risk * 2)  # 2:1 risk:reward
-
-            self.logger.debug(f"Calculated take profits: TP1={take_profit_1}, TP2={take_profit_2}")
-
-        # Add debugging output
-        self.logger.debug(f"Take profit values: TP1={take_profit_1}, TP2={take_profit_2}")
-
-        # FIXED: Validate risk-reward ratio
-        if not self._validate_risk_reward(order_type, signal.price, stop_loss, take_profit_1):
-            self.logger.warning(f"Rejecting trade due to poor risk-reward ratio for signal {signal.id}")
-            # Mark it as executed but log the rejection reason
+        # Validate position size
+        if position_size is None or not self.position_sizer.validate_position_size(signal.symbol, position_size):
+            self.logger.warning(f"Invalid position size calculated: {position_size}")
             return False
 
-        try:
-            if take_profit_1 > 0 and take_profit_2 > 0:
-                # Use multi-position profit-taking strategy
-                return self._execute_with_partial_profit(signal, metadata, order_type, stop_loss,
-                                                         take_profit_1, take_profit_2)
-            else:
-                # Use standard single position strategy
-                return self._execute_standard_entry(signal, metadata, order_type, stop_loss)
-        except Exception as e:
-            # Get the full traceback
-            trace = traceback.format_exc()
-            self.logger.error(f"Error in _execute_entry_signal: {str(e)}\n{trace}")
-            return False
+        # Calculate take-profit levels based on risk-reward ratios and strategy
+        take_profit_levels = self._calculate_strategy_take_profits(
+            signal, metadata, stop_loss, order_type
+        )
 
-    def _get_valid_take_profit(self, metadata, key):
-        """Extract and validate take profit value from metadata.
+        # Use two-part trade execution as specified in the plan
+        return self._execute_with_partial_profit(
+            signal, metadata, order_type, stop_loss, position_size, take_profit_levels
+        )
+
+    def _calculate_strategy_stop_loss(self, signal, metadata, order_type):
+        """Calculate appropriate stop loss based on strategy type.
 
         Args:
+            signal (StrategySignal): The strategy signal
             metadata (dict): Signal metadata
-            key (str): Key to look for in metadata
+            order_type (int): Order type (0=BUY, 1=SELL)
 
         Returns:
-            float: Valid take profit value or 0.0 if invalid
+            float: Calculated stop loss price
         """
-        tp_value = metadata.get(key, 0.0)
-        if tp_value is None or not isinstance(tp_value, (int, float)) or tp_value <= 0:
-            return 0.0
-        return tp_value
+        strategy_name = signal.strategy_name
 
-    def _validate_risk_reward(self, order_type, entry_price, stop_loss, take_profit):
-        """Validate that risk-reward ratio is acceptable.
+        # Get stop loss from metadata if available
+        stop_loss = metadata.get('stop_loss')
+
+        # If no stop_loss in metadata or invalid, calculate based on strategy
+        if stop_loss is None or not isinstance(stop_loss, (int, float)) or stop_loss <= 0:
+            # Get ATR if available for ATR-based stops
+            atr_value = metadata.get('atr')
+            current_price = signal.price
+
+            if strategy_name == "Breakout":
+                # For Breakout strategy: stop at 1.5×ATR from entry (per plan)
+                if atr_value:
+                    if order_type == 0:  # BUY
+                        stop_loss = current_price - (atr_value * 1.5)
+                    else:  # SELL
+                        stop_loss = current_price + (atr_value * 1.5)
+                else:
+                    # Fallback: just outside broken level
+                    if order_type == 0:  # BUY
+                        level = metadata.get('range_bottom', 0)
+                        stop_loss = level * 0.997 if level > 0 else current_price * 0.995
+                    else:  # SELL
+                        level = metadata.get('range_top', 0)
+                        stop_loss = level * 1.003 if level > 0 else current_price * 1.005
+
+            elif strategy_name == "Momentum_Scalping":
+                # For Momentum: below recent swing low or EMA-based
+                swing_low = metadata.get('swing_low', 0)
+                swing_high = metadata.get('swing_high', 0)
+                ema = metadata.get('ema', 0)
+
+                if order_type == 0:  # BUY
+                    if swing_low > 0:
+                        stop_loss = swing_low
+                    elif ema > 0:
+                        # 15-20 pips below EMA (approximately $1.5-2.0 for gold)
+                        stop_loss = ema - 2.0
+                    else:
+                        # Fallback
+                        stop_loss = current_price * 0.995
+                else:  # SELL
+                    if swing_high > 0:
+                        stop_loss = swing_high
+                    elif ema > 0:
+                        stop_loss = ema + 2.0
+                    else:
+                        stop_loss = current_price * 1.005
+
+            elif strategy_name == "Ichimoku_Cloud":
+                # For Ichimoku: below cloud or Kijun-sen
+                cloud_bottom = metadata.get('senkou_span_b', 0)
+                kijun = metadata.get('kijun_sen', 0)
+
+                if order_type == 0:  # BUY
+                    if cloud_bottom > 0 and cloud_bottom < current_price:
+                        stop_loss = cloud_bottom * 0.997
+                    elif kijun > 0:
+                        stop_loss = kijun * 0.997
+                    else:
+                        stop_loss = current_price * 0.99
+                else:  # SELL
+                    cloud_top = metadata.get('senkou_span_a', 0)
+                    if cloud_top > 0 and cloud_top > current_price:
+                        stop_loss = cloud_top * 1.003
+                    elif kijun > 0:
+                        stop_loss = kijun * 1.003
+                    else:
+                        stop_loss = current_price * 1.01
+
+            elif strategy_name == "Range_Mean_Reversion":
+                # For Range strategy: just outside the range boundary
+                if order_type == 0:  # BUY at support
+                    range_bottom = metadata.get('range_bottom', 0)
+                    if range_bottom > 0:
+                        stop_loss = range_bottom * 0.997  # Just below support
+                    else:
+                        stop_loss = current_price * 0.995
+                else:  # SELL at resistance
+                    range_top = metadata.get('range_top', 0)
+                    if range_top > 0:
+                        stop_loss = range_top * 1.003  # Just above resistance
+                    else:
+                        stop_loss = current_price * 1.005
+
+            else:  # Moving Average or default
+                # For MA strategy: below recent swing low/high
+                if order_type == 0:  # BUY
+                    swing_low = metadata.get('swing_low', 0)
+                    if swing_low > 0:
+                        stop_loss = swing_low
+                    elif atr_value:
+                        stop_loss = current_price - (atr_value * 1.5)
+                    else:
+                        stop_loss = current_price * 0.995
+                else:  # SELL
+                    swing_high = metadata.get('swing_high', 0)
+                    if swing_high > 0:
+                        stop_loss = swing_high
+                    elif atr_value:
+                        stop_loss = current_price + (atr_value * 1.5)
+                    else:
+                        stop_loss = current_price * 1.005
+
+        # Final validation
+        if stop_loss <= 0:
+            self.logger.warning(f"Invalid calculated stop loss: {stop_loss}, using fallback")
+            # Fallback: 1% from price
+            stop_loss = signal.price * 0.99 if order_type == 0 else signal.price * 1.01
+
+        # Log the strategy-specific stop calculation
+        self.logger.debug(
+            f"Calculated {strategy_name} stop loss: {stop_loss} "
+            f"for {signal.signal_type} at {signal.price}"
+        )
+
+        return stop_loss
+
+    def _calculate_strategy_take_profits(self, signal, metadata, stop_loss, order_type):
+        """Calculate take-profit levels based on strategy requirements.
 
         Args:
-            order_type (int): Order type (0=BUY, 1=SELL)
-            entry_price (float): Entry price
+            signal (StrategySignal): The strategy signal
+            metadata (dict): Signal metadata
             stop_loss (float): Stop loss price
-            take_profit (float): Take profit price
+            order_type (int): Order type (0=BUY, 1=SELL)
 
         Returns:
-            bool: True if risk-reward is acceptable, False otherwise
+            list: List of take-profit prices [target1, target2]
         """
-        if entry_price <= 0 or stop_loss <= 0 or take_profit <= 0:
-            self.logger.error(
-                f"Invalid prices for risk-reward validation: entry={entry_price}, stop={stop_loss}, tp={take_profit}")
-            return False
+        strategy_name = signal.strategy_name
+        entry_price = signal.price
 
-        # Calculate risk and reward
+        # Calculate the risk (distance from entry to stop)
+        risk = abs(entry_price - stop_loss)
+
+        # Default risk-reward ratios
+        r1 = 1.0  # First target at 1:1 (per plan)
+        r2 = 2.0  # Second target at 2:1
+
+        # Strategy-specific adjustments
+        if strategy_name == "Breakout":
+            # Breakout strategy per plan:
+            # "take half off at 1×ATR profit and move stop to breakeven"
+            r1 = 1.0
+            r2 = 2.0  # Can also use projection based on range height
+
+            # Range height projection as possible second target
+            range_top = metadata.get('range_top', 0)
+            range_bottom = metadata.get('range_bottom', 0)
+            if range_top > 0 and range_bottom > 0 and (range_top > range_bottom):
+                range_height = range_top - range_bottom
+
+                if order_type == 0:  # BUY
+                    projected_target = entry_price + range_height
+                    r2 = min(3.0, (projected_target - entry_price) / risk)
+                else:  # SELL
+                    projected_target = entry_price - range_height
+                    r2 = min(3.0, (entry_price - projected_target) / risk)
+
+        elif strategy_name == "Momentum_Scalping":
+            # Momentum strategy: "Take half profit at +1 R (i.e., a reward equal to that risk)"
+            r1 = 1.0
+            r2 = 2.0  # For the second half, can be larger if momentum continues
+
+        elif strategy_name == "Ichimoku_Cloud":
+            # Ichimoku strategy: "1.5:1 reward-to-risk for first target, 3:1 for remainder"
+            r1 = 1.5
+            r2 = 3.0
+
+        elif strategy_name == "Range_Mean_Reversion":
+            # Range strategy: midpoint and opposite side of range
+            range_top = metadata.get('range_top', 0)
+            range_bottom = metadata.get('range_bottom', 0)
+            range_midpoint = metadata.get('range_midpoint', 0)
+
+            # Custom calculation for range strategy
+            if range_top > 0 and range_bottom > 0 and range_midpoint > 0:
+                if order_type == 0:  # BUY at support, targets are midpoint and resistance
+                    tp1 = range_midpoint
+                    tp2 = range_top * 0.997  # Just below resistance
+
+                    # Calculate equivalent reward ratios for logging
+                    r1 = (tp1 - entry_price) / risk if risk > 0 else 1.0
+                    r2 = (tp2 - entry_price) / risk if risk > 0 else 2.0
+
+                    # Return absolute values rather than ratios
+                    return [tp1, tp2]
+
+                else:  # SELL at resistance, targets are midpoint and support
+                    tp1 = range_midpoint
+                    tp2 = range_bottom * 1.003  # Just above support
+
+                    # Calculate equivalent reward ratios for logging
+                    r1 = (entry_price - tp1) / risk if risk > 0 else 1.0
+                    r2 = (entry_price - tp2) / risk if risk > 0 else 2.0
+
+                    # Return absolute values rather than ratios
+                    return [tp1, tp2]
+
+        # For other strategies or fallback, calculate targets based on ratios
         if order_type == 0:  # BUY
-            risk = entry_price - stop_loss
-            reward = take_profit - entry_price
+            tp1 = entry_price + (risk * r1)
+            tp2 = entry_price + (risk * r2)
         else:  # SELL
-            risk = stop_loss - entry_price
-            reward = entry_price - take_profit
+            tp1 = entry_price - (risk * r1)
+            tp2 = entry_price - (risk * r2)
 
-        # Validate both are positive
-        if risk <= 0:
-            self.logger.error(f"Invalid risk: {risk} for {order_type} order")
-            return False
+        self.logger.debug(
+            f"Calculated {strategy_name} take-profits: {[tp1, tp2]} "
+            f"(based on risk={risk} with R:R={[r1, r2]})"
+        )
 
-        if reward <= 0:
-            self.logger.error(f"Invalid reward: {reward} for {order_type} order")
-            return False
+        return [tp1, tp2]
 
-        # Calculate risk-reward ratio
-        rr_ratio = risk / reward
-
-        self.logger.debug(f"Risk-reward analysis: risk={risk}, reward={reward}, ratio={rr_ratio:.2f}")
-
-        # Check against minimum acceptable ratio
-        if rr_ratio > 2.5:  # Don't risk more than 2.5x the potential reward
-            self.logger.warning(f"Poor risk-reward ratio: {rr_ratio:.2f}. Maximum acceptable is 2.5")
-            return False
-
-        return True
-
-    def _execute_with_partial_profit(self, signal, metadata, order_type, stop_loss,
-                                     take_profit_1, take_profit_2):
-        """Execute an entry with partial profit-taking plan by opening two separate positions.
+    def _execute_with_partial_profit(self, signal, metadata, order_type, stop_loss, position_size, take_profit_levels):
+        """Execute an entry with the two-part profit strategy specified in the plan.
 
         Args:
             signal (StrategySignal): The entry signal
             metadata (dict): Signal metadata
             order_type (int): Order type (0=BUY, 1=SELL)
-            stop_loss (float): Initial stop loss price
-            take_profit_1 (float): First target for partial profit-taking
-            take_profit_2 (float): Second target for the remainder
+            stop_loss (float): Stop loss price
+            position_size (float): Total position size
+            take_profit_levels (list): List of [tp1, tp2] prices
 
         Returns:
             bool: True if executed successfully, False otherwise
         """
-        self.logger.info(f"Executing with partial profit strategy for signal {signal.id}")
-
         try:
-            # Validate input values
-            if signal.price is None or not isinstance(signal.price, (int, float)) or signal.price <= 0:
-                self.logger.error(f"Invalid signal price: {signal.price}")
-                return False
-
-            if stop_loss is None or not isinstance(stop_loss, (int, float)) or stop_loss <= 0:
-                self.logger.error(f"Invalid stop loss price: {stop_loss}")
-                return False
-
-            if take_profit_1 is None or not isinstance(take_profit_1, (int, float)) or take_profit_1 <= 0:
-                self.logger.error(f"Invalid take profit 1 price: {take_profit_1}")
-                return False
-
-            if take_profit_2 is None or not isinstance(take_profit_2, (int, float)) or take_profit_2 <= 0:
-                self.logger.error(f"Invalid take profit 2 price: {take_profit_2}")
-                return False
-
-            # FIXED: Verify risk-reward for both targets
-            if not self._validate_risk_reward(order_type, signal.price, stop_loss, take_profit_1):
-                self.logger.warning(f"First target has poor risk-reward ratio for signal {signal.id}")
-                return False
-
-            if not self._validate_risk_reward(order_type, signal.price, stop_loss, take_profit_2):
-                self.logger.warning(f"Second target has poor risk-reward ratio for signal {signal.id}")
-                # Could still proceed with just the first target if needed
-                # For now, we'll reject the whole trade
-
-            # Calculate total position size
-            total_position_size = self.position_sizer.calculate_position_size(
-                symbol=signal.symbol,
-                entry_price=signal.price,
-                stop_loss_price=stop_loss
-            )
-
-            # Validate position size
-            if total_position_size is None or not self.position_sizer.validate_position_size(signal.symbol,
-                                                                                             total_position_size):
-                self.logger.warning(f"Invalid position size calculated: {total_position_size}")
-                return False
-
             # Split into two equal parts
-            position_size_1 = total_position_size * 0.5
-            position_size_2 = total_position_size * 0.5
+            position_size_1 = position_size * 0.5
+            position_size_2 = position_size * 0.5
 
-            # Round to allowed lot sizes if needed
+            # Round to allowed lot sizes
             symbol_info = self.connector.get_symbol_info(signal.symbol)
             lot_step = symbol_info['lot_step']
+            min_lot = symbol_info['min_lot']
 
             position_size_1 = round(position_size_1 / lot_step) * lot_step
-            position_size_2 = total_position_size - position_size_1
+            position_size_2 = position_size - position_size_1
 
             # Ensure minimum lot sizes
-            min_lot = symbol_info['min_lot']
             if position_size_1 < min_lot or position_size_2 < min_lot:
                 # Can't split, use single position approach
-                self.logger.warning(f"Position size too small to split: {total_position_size}. Using single position.")
-                return self._execute_standard_entry(signal, metadata, order_type, stop_loss)
+                self.logger.warning(
+                    f"Position size too small to split: {position_size}. Using single position."
+                )
 
-            # Create comments for the two positions
+                # Use combined position with first target
+                comment = f"Signal_{signal.id}_{signal.strategy_name}"
+
+                order_result = self.connector.place_order(
+                    order_type=order_type,
+                    symbol=signal.symbol,
+                    volume=position_size,
+                    price=0.0,  # Market price
+                    stop_loss=stop_loss,
+                    take_profit=take_profit_levels[0],  # First target
+                    comment=comment
+                )
+
+                # Record the trade
+                trade = Trade(
+                    strategy_name=signal.strategy_name,
+                    signal_id=signal.id,
+                    symbol=signal.symbol,
+                    order_type=signal.signal_type,
+                    volume=position_size,
+                    open_price=order_result['price'],
+                    open_time=datetime.utcnow(),
+                    stop_loss=stop_loss,
+                    take_profit=take_profit_levels[0],
+                    comment=comment
+                )
+                self.trade_repository.add(trade)
+
+                self.logger.info(
+                    f"Executed {signal.signal_type} order: {position_size} lots of {signal.symbol} "
+                    f"at ${order_result['price']:.2f}, SL=${stop_loss:.2f}, TP=${take_profit_levels[0]:.2f}"
+                )
+
+                return True
+
+            # Execute two-part strategy as per the plan
+            # First part with first target
             comment_1 = f"Signal_{signal.id}_{signal.strategy_name}_Part1"
-            comment_2 = f"Signal_{signal.id}_{signal.strategy_name}_Part2"
 
-            # Place first position with the first target
             order_result_1 = self.connector.place_order(
                 order_type=order_type,
                 symbol=signal.symbol,
                 volume=position_size_1,
                 price=0.0,  # Market price
                 stop_loss=stop_loss,
-                take_profit=take_profit_1,
+                take_profit=take_profit_levels[0],  # First target at 1:1 R:R
                 comment=comment_1
             )
 
@@ -375,19 +501,21 @@ class EnhancedOrderManager:
                 open_price=order_result_1['price'],
                 open_time=datetime.utcnow(),
                 stop_loss=stop_loss,
-                take_profit=take_profit_1,
+                take_profit=take_profit_levels[0],
                 comment=comment_1
             )
             self.trade_repository.add(trade_1)
 
-            # Place second position with further target
+            # Second part with second target
+            comment_2 = f"Signal_{signal.id}_{signal.strategy_name}_Part2"
+
             order_result_2 = self.connector.place_order(
                 order_type=order_type,
                 symbol=signal.symbol,
                 volume=position_size_2,
                 price=0.0,  # Market price
                 stop_loss=stop_loss,
-                take_profit=take_profit_2,
+                take_profit=take_profit_levels[1],  # Second target (extended)
                 comment=comment_2
             )
 
@@ -401,7 +529,7 @@ class EnhancedOrderManager:
                 open_price=order_result_2['price'],
                 open_time=datetime.utcnow(),
                 stop_loss=stop_loss,
-                take_profit=take_profit_2,
+                take_profit=take_profit_levels[1],
                 comment=comment_2
             )
             self.trade_repository.add(trade_2)
@@ -409,116 +537,14 @@ class EnhancedOrderManager:
             self.logger.info(
                 f"Successfully executed {signal.signal_type} with partial profit: "
                 f"position 1: {position_size_1} lots at ${order_result_1['price']:.2f}, "
-                f"TP=${take_profit_1:.2f}, position 2: {position_size_2} lots at ${order_result_2['price']:.2f}, "
-                f"TP=${take_profit_2:.2f}"
+                f"TP=${take_profit_levels[0]:.2f}, position 2: {position_size_2} lots at "
+                f"${order_result_2['price']:.2f}, TP=${take_profit_levels[1]:.2f}"
             )
 
             return True
 
         except Exception as e:
             self.logger.error(f"Error executing partial profit strategy: {str(e)}")
-            return False
-
-    def _execute_standard_entry(self, signal, metadata, order_type, stop_loss):
-        """Execute a standard entry (single position).
-
-        Args:
-            signal (StrategySignal): The entry signal
-            metadata (dict): Signal metadata
-            order_type (int): Order type (0=BUY, 1=SELL)
-            stop_loss (float): Stop loss price
-
-        Returns:
-            bool: True if executed successfully, False otherwise
-        """
-        try:
-            # Validate that signal price and stop_loss are valid numbers
-            if signal.price is None or not isinstance(signal.price, (int, float)) or signal.price <= 0:
-                self.logger.error(f"Invalid signal price: {signal.price}")
-                return False
-
-            if stop_loss is None or not isinstance(stop_loss, (int, float)) or stop_loss <= 0:
-                self.logger.error(f"Invalid stop loss price: {stop_loss}")
-                return False
-
-            # Calculate position size
-            position_size = self.position_sizer.calculate_position_size(
-                symbol=signal.symbol,
-                entry_price=signal.price,
-                stop_loss_price=stop_loss
-            )
-
-            # Validate position size
-            if position_size is None or not self.position_sizer.validate_position_size(signal.symbol, position_size):
-                self.logger.warning(f"Invalid position size calculated: {position_size}")
-                return False
-
-            # FIXED: Calculate take profit correctly based on order type and risk
-            # For BUY, profit is above entry; for SELL, profit is below entry
-            # Prioritize metadata value if available, otherwise calculate based on risk
-            risk = abs(signal.price - stop_loss)
-
-            # Start by checking all possible keys for take profit values
-            take_profit = metadata.get('take_profit_1r', 0.0)
-            if not take_profit:
-                take_profit = metadata.get('take_profit', 0.0)
-            if not take_profit:
-                take_profit = metadata.get('take_profit_midpoint', 0.0)
-
-            # If still no valid take profit, calculate one based on risk
-            if not take_profit or take_profit <= 0:
-                if order_type == 0:  # BUY
-                    take_profit = signal.price + (risk * 1.5)  # 1.5:1 reward-to-risk
-                else:  # SELL
-                    take_profit = signal.price - (risk * 1.5)  # 1.5:1 reward-to-risk
-
-            self.logger.debug(
-                f"Take profit calculation: entry={signal.price}, stop={stop_loss}, risk={risk}, TP={take_profit}")
-
-            # FIXED: Validate risk-reward ratio
-            if not self._validate_risk_reward(order_type, signal.price, stop_loss, take_profit):
-                self.logger.warning(f"Rejecting trade due to poor risk-reward ratio")
-                return False
-
-            # Add signal info to order comment
-            comment = f"Signal_{signal.id}_{signal.strategy_name}"
-
-            # Execute the order
-            order_result = self.connector.place_order(
-                order_type=order_type,
-                symbol=signal.symbol,
-                volume=position_size,
-                price=0.0,  # Market price
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                comment=comment
-            )
-
-            # Record the trade in the database
-            trade = Trade(
-                strategy_name=signal.strategy_name,
-                signal_id=signal.id,
-                symbol=signal.symbol,
-                order_type=signal.signal_type,
-                volume=position_size,
-                open_price=order_result['price'],
-                open_time=datetime.utcnow(),
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                comment=comment
-            )
-
-            self.trade_repository.add(trade)
-
-            self.logger.info(
-                f"Executed {signal.signal_type} order: {position_size} lots of {signal.symbol} "
-                f"at ${order_result['price']:.2f}, SL=${stop_loss:.2f}, TP=${take_profit:.2f}"
-            )
-
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Error placing order: {str(e)}")
             return False
 
     def _execute_close_signal(self, signal, metadata):
@@ -586,49 +612,3 @@ class EnhancedOrderManager:
         except Exception as e:
             self.logger.error(f"Error executing close signal: {str(e)}")
             return False
-
-    def _calculate_default_take_profit(self, entry_price, stop_loss, order_type):
-        """Calculate a default take profit price based on risk-to-reward ratio.
-
-        Args:
-            entry_price (float): Position entry price
-            stop_loss (float): Stop loss price
-            order_type (int): Order type (0=BUY, 1=SELL)
-
-        Returns:
-            float: Calculated take profit price
-        """
-        # Validate inputs
-        if entry_price is None or stop_loss is None or order_type is None:
-            self.logger.warning(
-                f"Invalid input for take profit calculation: entry=${entry_price}, stop=${stop_loss}, type=${order_type}")
-            # Use a default 1% move as fallback
-            return entry_price * 1.01 if order_type == 0 else entry_price * 0.99
-
-        # Default risk-to-reward ratio of 1:1.5
-        risk_reward_ratio = 1.5
-
-        # Calculate risk (distance from entry to stop)
-        if order_type == 0:  # BUY
-            risk = entry_price - stop_loss
-            take_profit = entry_price + (risk * risk_reward_ratio)
-        else:  # SELL
-            risk = stop_loss - entry_price
-            take_profit = entry_price - (risk * risk_reward_ratio)
-
-        # Validate take profit (ensure it's reasonable)
-        if risk <= 0:
-            self.logger.warning(f"Invalid risk calculation: entry=${entry_price:.2f}, stop=${stop_loss:.2f}")
-            # Use a default 1% move if risk calculation failed
-            if order_type == 0:  # BUY
-                take_profit = entry_price * 1.01
-            else:  # SELL
-                take_profit = entry_price * 0.99
-
-        # Log the calculation
-        self.logger.debug(
-            f"Calculated default take profit for {order_type}: "
-            f"entry=${entry_price:.2f}, stop=${stop_loss:.2f}, take_profit=${take_profit:.2f}"
-        )
-
-        return take_profit

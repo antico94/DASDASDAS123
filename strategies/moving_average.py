@@ -1,3 +1,4 @@
+# strategies/moving_average.py
 import numpy as np
 from strategies.base_strategy import BaseStrategy
 
@@ -16,15 +17,7 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
 
     def __init__(self, symbol="XAUUSD", timeframe="H1",
                  fast_period=20, slow_period=50, data_fetcher=None):
-        """Initialize the Enhanced Moving Average strategy.
-
-        Args:
-            symbol (str, optional): Symbol to trade. Defaults to "XAUUSD".
-            timeframe (str, optional): Chart timeframe. Defaults to "H1".
-            fast_period (int, optional): Fast EMA period. Defaults to 20.
-            slow_period (int, optional): Slow EMA period. Defaults to 50.
-            data_fetcher (MT5DataFetcher, optional): Data fetcher. Defaults to None.
-        """
+        """Initialize the Enhanced Moving Average strategy."""
         super().__init__(symbol, timeframe, name="EnhancedMA_Trend", data_fetcher=data_fetcher)
 
         # Validate inputs
@@ -43,14 +36,7 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
         )
 
     def calculate_indicators(self, data):
-        """Calculate strategy indicators on OHLC data.
-
-        Args:
-            data (pandas.DataFrame): OHLC data
-
-        Returns:
-            pandas.DataFrame: Data with indicators added
-        """
+        """Calculate strategy indicators on OHLC data."""
         if len(data) < self.min_required_candles:
             self.logger.warning(
                 f"Insufficient data for MA calculations. "
@@ -97,33 +83,110 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
         data['swing_high'] = data['high'].rolling(window=5, center=True).max()
         data['swing_low'] = data['low'].rolling(window=5, center=True).min()
 
-        # Calculate pullback detection
+        # Enhanced pullback detection (key improvement)
         # A pullback is when price retraces toward the EMA in an established trend
-        data['pullback_to_fast_ema'] = np.where(
-            (data['trend_bias'] == 1) &  # Bullish trend
-            (data['low'] < data['fast_ema']) &  # Price dipped to/below fast EMA
-            (data['close'] > data['fast_ema']),  # But closed above it
-            1,  # Bullish pullback to fast EMA
-            np.where(
-                (data['trend_bias'] == -1) &  # Bearish trend
-                (data['high'] > data['fast_ema']) &  # Price rose to/above fast EMA
-                (data['close'] < data['fast_ema']),  # But closed below it
-                -1,  # Bearish pullback to fast EMA
-                0  # No pullback
-            )
-        )
+        data = self._calculate_pullback_signals(data)
+
+        # Check for higher highs/higher lows (trend confirmation)
+        data = self._calculate_trend_confirmation(data)
+
+        return data
+
+    def _calculate_pullback_signals(self, data):
+        """Calculate pullback signals based on price interaction with EMAs.
+
+        This is a more sophisticated approach to detect pullbacks to the EMAs
+        in established trends per the original plan.
+        """
+        # Initialize pullback column
+        data['pullback_to_ema'] = 0
+
+        # Need at least 5 bars of data
+        if len(data) < 5:
+            return data
+
+        # Loop through the data to detect pullbacks
+        for i in range(5, len(data)):
+            # Check for bullish trend
+            if data.iloc[i - 3:i]['trend_bias'].mean() > 0.8:  # Strong bullish trend
+                # Check if price pulled back to the fast EMA
+                if (data.iloc[i]['low'] <= data.iloc[i]['fast_ema'] and
+                        data.iloc[i]['close'] > data.iloc[i]['fast_ema']):
+                    # This is a pullback to fast EMA in uptrend
+                    data.loc[data.index[i], 'pullback_to_ema'] = 1
+
+                # Check if price pulled back to the slow EMA (deeper pullback)
+                elif (data.iloc[i]['low'] <= data.iloc[i]['slow_ema'] and
+                      data.iloc[i]['close'] > data.iloc[i]['slow_ema']):
+                    # This is a pullback to slow EMA in uptrend
+                    data.loc[data.index[i], 'pullback_to_ema'] = 2
+
+            # Check for bearish trend
+            elif data.iloc[i - 3:i]['trend_bias'].mean() < -0.8:  # Strong bearish trend
+                # Check if price pulled back to the fast EMA
+                if (data.iloc[i]['high'] >= data.iloc[i]['fast_ema'] and
+                        data.iloc[i]['close'] < data.iloc[i]['fast_ema']):
+                    # This is a pullback to fast EMA in downtrend
+                    data.loc[data.index[i], 'pullback_to_ema'] = -1
+
+                # Check if price pulled back to the slow EMA (deeper pullback)
+                elif (data.iloc[i]['high'] >= data.iloc[i]['slow_ema'] and
+                      data.iloc[i]['close'] < data.iloc[i]['slow_ema']):
+                    # This is a pullback to slow EMA in downtrend
+                    data.loc[data.index[i], 'pullback_to_ema'] = -2
+
+        return data
+
+    def _calculate_trend_confirmation(self, data):
+        """Calculate trend confirmation based on price making higher highs/higher lows.
+
+        This implements the "higher highs and higher lows" confirmation
+        mentioned in the original plan.
+        """
+        # Initialize trend confirmation columns
+        data['higher_highs'] = False
+        data['higher_lows'] = False
+        data['lower_highs'] = False
+        data['lower_lows'] = False
+
+        # Need at least 10 bars to confirm trend
+        if len(data) < 10:
+            return data
+
+        # Analyze for higher highs and higher lows (uptrend)
+        for i in range(10, len(data)):
+            # Get recent highs and lows
+            recent_highs = data.iloc[i - 10:i]['high'].rolling(window=3).max()
+            recent_lows = data.iloc[i - 10:i]['low'].rolling(window=3).min()
+
+            # Check for higher highs (last 3 swing highs are rising)
+            if (len(recent_highs.dropna()) >= 3 and
+                    recent_highs.iloc[-1] > recent_highs.iloc[-4] and
+                    recent_highs.iloc[-4] > recent_highs.iloc[-7]):
+                data.loc[data.index[i], 'higher_highs'] = True
+
+            # Check for higher lows (last 3 swing lows are rising)
+            if (len(recent_lows.dropna()) >= 3 and
+                    recent_lows.iloc[-1] > recent_lows.iloc[-4] and
+                    recent_lows.iloc[-4] > recent_lows.iloc[-7]):
+                data.loc[data.index[i], 'higher_lows'] = True
+
+            # Check for lower highs (downtrend)
+            if (len(recent_highs.dropna()) >= 3 and
+                    recent_highs.iloc[-1] < recent_highs.iloc[-4] and
+                    recent_highs.iloc[-4] < recent_highs.iloc[-7]):
+                data.loc[data.index[i], 'lower_highs'] = True
+
+            # Check for lower lows (downtrend)
+            if (len(recent_lows.dropna()) >= 3 and
+                    recent_lows.iloc[-1] < recent_lows.iloc[-4] and
+                    recent_lows.iloc[-4] < recent_lows.iloc[-7]):
+                data.loc[data.index[i], 'lower_lows'] = True
 
         return data
 
     def analyze(self, data):
-        """Analyze market data and generate trading signals.
-
-        Args:
-            data (pandas.DataFrame): OHLC data for analysis
-
-        Returns:
-            list: Generated trading signals
-        """
+        """Analyze market data and generate trading signals."""
         # Calculate indicators
         data = self.calculate_indicators(data)
 
@@ -139,30 +202,37 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
         previous_candle = data.iloc[-2] if len(data) > 1 else None
 
         # Check for signals
-        # 1. Crossover on the last candle
+
+        # 1. Crossover Signals (as in original plan)
         if last_candle['crossover'] == 1:  # Bullish crossover
-            signal = self._generate_bullish_crossover_signal(data, last_candle)
-            if signal:
-                signals.append(signal)
+            # Enhance with trend confirmation
+            if last_candle['higher_lows']:  # Confirm uptrend with higher lows
+                signal = self._generate_bullish_crossover_signal(data, last_candle)
+                if signal:
+                    signals.append(signal)
 
         elif last_candle['crossover'] == -1:  # Bearish crossover
-            signal = self._generate_bearish_crossover_signal(data, last_candle)
-            if signal:
-                signals.append(signal)
+            # Enhance with trend confirmation
+            if last_candle['lower_highs']:  # Confirm downtrend with lower highs
+                signal = self._generate_bearish_crossover_signal(data, last_candle)
+                if signal:
+                    signals.append(signal)
 
-        # 2. Pullback entries in established trends
+        # 2. Pullback Entry Signals (key addition from the plan)
         elif previous_candle is not None:
-            # Bullish pullback entry in uptrend
-            if (last_candle['pullback_to_fast_ema'] == 1 and
-                    data['trend_bias'].iloc[-3:].mean() > 0.5):  # Consistent uptrend
+            # Bullish pullback to EMA in established uptrend
+            if (last_candle['pullback_to_ema'] > 0 and
+                    last_candle['higher_lows'] and  # Trending higher
+                    data['trend_bias'].iloc[-5:].mean() > 0.8):  # Strong uptrend
 
                 signal = self._generate_bullish_pullback_signal(data, last_candle)
                 if signal:
                     signals.append(signal)
 
-            # Bearish pullback entry in downtrend
-            elif (last_candle['pullback_to_fast_ema'] == -1 and
-                  data['trend_bias'].iloc[-3:].mean() < -0.5):  # Consistent downtrend
+            # Bearish pullback to EMA in established downtrend
+            elif (last_candle['pullback_to_ema'] < 0 and
+                  last_candle['lower_highs'] and  # Trending lower
+                  data['trend_bias'].iloc[-5:].mean() < -0.8):  # Strong downtrend
 
                 signal = self._generate_bearish_pullback_signal(data, last_candle)
                 if signal:
@@ -171,15 +241,7 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
         return signals
 
     def _generate_bullish_crossover_signal(self, data, last_candle):
-        """Generate a bullish signal from EMA crossover.
-
-        Args:
-            data (pandas.DataFrame): OHLC data with indicators
-            last_candle (pandas.Series): Last complete candle
-
-        Returns:
-            StrategySignal or None: The generated signal or None
-        """
+        """Generate a bullish signal from EMA crossover."""
         # Find recent swing low for stop loss placement
         recent_swing_low = data['swing_low'].iloc[-6:-1].min()
 
@@ -197,14 +259,6 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
         take_profit_1r = entry_price + risk  # 1:1 reward:risk for first target
         take_profit_2r = entry_price + (risk * 2)  # 2:1 reward:risk for second target
 
-        # Ensure risk-reward ratio is valid
-        if risk <= 0 or (entry_price - stop_loss) / entry_price > 0.03:  # Risk more than 3% of price
-            self.logger.warning(
-                f"Invalid risk-reward setup: entry={entry_price:.2f}, stop={stop_loss:.2f}, "
-                f"risk={risk:.2f}, risk%={(risk/entry_price)*100:.2f}%"
-            )
-            return None
-
         signal = self.create_signal(
             signal_type="BUY",
             price=entry_price,
@@ -217,7 +271,11 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
                 'take_profit_2r': take_profit_2r,
                 'atr': last_candle['atr'],
                 'signal_type': 'crossover',
-                'reason': 'Bullish EMA crossover'
+                'reason': 'Bullish EMA crossover with trend confirmation',
+                'timeframe': self.timeframe,
+                'swing_low': recent_swing_low,
+                'higher_lows': bool(last_candle['higher_lows']),
+                'higher_highs': bool(last_candle['higher_highs']),
             }
         )
 
@@ -230,15 +288,7 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
         return signal
 
     def _generate_bearish_crossover_signal(self, data, last_candle):
-        """Generate a bearish signal from EMA crossover.
-
-        Args:
-            data (pandas.DataFrame): OHLC data with indicators
-            last_candle (pandas.Series): Last complete candle
-
-        Returns:
-            StrategySignal or None: The generated signal or None
-        """
+        """Generate a bearish signal from EMA crossover."""
         # Find recent swing high for stop loss placement
         recent_swing_high = data['swing_high'].iloc[-6:-1].max()
 
@@ -251,18 +301,10 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
             # Use ATR-based stop instead
             stop_loss = entry_price + (last_candle['atr'] * 1.5)
 
-        # FIXED: Calculate take profit levels using reward:risk ratio
+        # Calculate take profit levels using reward:risk ratio
         risk = stop_loss - entry_price
         take_profit_1r = entry_price - risk  # 1:1 reward:risk for first target
         take_profit_2r = entry_price - (risk * 2)  # 2:1 reward:risk for second target
-
-        # Ensure risk-reward ratio is valid
-        if risk <= 0 or (stop_loss - entry_price) / entry_price > 0.03:  # Risk more than 3% of price
-            self.logger.warning(
-                f"Invalid risk-reward setup: entry={entry_price:.2f}, stop={stop_loss:.2f}, "
-                f"risk={risk:.2f}, risk%={(risk/entry_price)*100:.2f}%"
-            )
-            return None
 
         signal = self.create_signal(
             signal_type="SELL",
@@ -276,7 +318,11 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
                 'take_profit_2r': take_profit_2r,
                 'atr': last_candle['atr'],
                 'signal_type': 'crossover',
-                'reason': 'Bearish EMA crossover'
+                'reason': 'Bearish EMA crossover with trend confirmation',
+                'timeframe': self.timeframe,
+                'swing_high': recent_swing_high,
+                'lower_lows': bool(last_candle['lower_lows']),
+                'lower_highs': bool(last_candle['lower_highs']),
             }
         )
 
@@ -291,12 +337,9 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
     def _generate_bullish_pullback_signal(self, data, last_candle):
         """Generate a bullish signal from pullback to EMA in uptrend.
 
-        Args:
-            data (pandas.DataFrame): OHLC data with indicators
-            last_candle (pandas.Series): Last complete candle
-
-        Returns:
-            StrategySignal or None: The generated signal or None
+        This implements the pullback entry method described in the plan:
+        "if gold is in an uptrend (price making higher highs and holding above the 50 EMA),
+        wait for price to dip near the 50 EMA or a known support and then buy"
         """
         # Find recent swing low for stop loss placement
         recent_swing_low = data['swing_low'].iloc[-6:-1].min()
@@ -320,13 +363,10 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
         take_profit_1r = entry_price + risk  # 1:1 reward:risk for first target
         take_profit_2r = entry_price + (risk * 2)  # 2:1 reward:risk for second target
 
-        # Ensure risk-reward ratio is valid
-        if risk <= 0 or take_profit_1r <= entry_price:
-            self.logger.warning(
-                f"Invalid risk-reward setup: entry={entry_price:.2f}, stop={stop_loss:.2f}, "
-                f"tp1={take_profit_1r:.2f}, risk={risk:.2f}"
-            )
-            return None
+        # Determine pullback type
+        pullback_type = "Fast EMA"
+        if last_candle['pullback_to_ema'] == 2:
+            pullback_type = "Slow EMA"
 
         signal = self.create_signal(
             signal_type="BUY",
@@ -340,13 +380,18 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
                 'take_profit_2r': take_profit_2r,
                 'atr': last_candle['atr'],
                 'signal_type': 'pullback',
-                'reason': 'Pullback to fast EMA in uptrend'
+                'pullback_type': pullback_type,
+                'reason': f'Pullback to {pullback_type} in confirmed uptrend',
+                'timeframe': self.timeframe,
+                'swing_low': recent_swing_low,
+                'higher_lows': bool(last_candle['higher_lows']),
+                'higher_highs': bool(last_candle['higher_highs']),
             }
         )
 
         self.logger.info(
             f"Generated BUY signal for {self.symbol} at {entry_price} "
-            f"(pullback to fast EMA in uptrend). "
+            f"(pullback to {pullback_type} in uptrend). "
             f"Stop: {stop_loss:.2f}, Target 1: {take_profit_1r:.2f}, Target 2: {take_profit_2r:.2f}"
         )
 
@@ -355,12 +400,8 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
     def _generate_bearish_pullback_signal(self, data, last_candle):
         """Generate a bearish signal from pullback to EMA in downtrend.
 
-        Args:
-            data (pandas.DataFrame): OHLC data with indicators
-            last_candle (pandas.Series): Last complete candle
-
-        Returns:
-            StrategySignal or None: The generated signal or None
+        This implements the pullback entry method described in the plan:
+        "In a downtrend, wait for a rally toward the EMA or a resistance and then sell from a higher level"
         """
         # Find recent swing high for stop loss placement
         recent_swing_high = data['swing_high'].iloc[-6:-1].max()
@@ -379,18 +420,15 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
             # Use ATR-based stop instead
             stop_loss = entry_price + (last_candle['atr'] * 1.5)
 
-        # FIXED: Calculate take profit levels using reward:risk ratio properly for SELL
+        # Calculate take profit levels using reward:risk ratio
         risk = stop_loss - entry_price
         take_profit_1r = entry_price - risk  # 1:1 reward:risk for first target
         take_profit_2r = entry_price - (risk * 2)  # 2:1 reward:risk for second target
 
-        # Ensure risk-reward ratio is valid
-        if risk <= 0 or take_profit_1r >= entry_price:
-            self.logger.warning(
-                f"Invalid risk-reward setup: entry={entry_price:.2f}, stop={stop_loss:.2f}, "
-                f"tp1={take_profit_1r:.2f}, risk={risk:.2f}"
-            )
-            return None
+        # Determine pullback type
+        pullback_type = "Fast EMA"
+        if last_candle['pullback_to_ema'] == -2:
+            pullback_type = "Slow EMA"
 
         signal = self.create_signal(
             signal_type="SELL",
@@ -404,13 +442,18 @@ class EnhancedMovingAverageStrategy(BaseStrategy):
                 'take_profit_2r': take_profit_2r,
                 'atr': last_candle['atr'],
                 'signal_type': 'pullback',
-                'reason': 'Pullback to fast EMA in downtrend'
+                'pullback_type': pullback_type,
+                'reason': f'Pullback to {pullback_type} in confirmed downtrend',
+                'timeframe': self.timeframe,
+                'swing_high': recent_swing_high,
+                'lower_lows': bool(last_candle['lower_lows']),
+                'lower_highs': bool(last_candle['lower_highs']),
             }
         )
 
         self.logger.info(
             f"Generated SELL signal for {self.symbol} at {entry_price} "
-            f"(pullback to fast EMA in downtrend). "
+            f"(pullback to {pullback_type} in downtrend). "
             f"Stop: {stop_loss:.2f}, Target 1: {take_profit_1r:.2f}, Target 2: {take_profit_2r:.2f}"
         )
 

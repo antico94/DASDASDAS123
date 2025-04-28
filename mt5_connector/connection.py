@@ -230,20 +230,7 @@ class MT5Connector:
 
     def place_order(self, order_type, symbol, volume, price=0.0,
                     stop_loss=0.0, take_profit=0.0, comment=""):
-        """Place a new order in MT5.
-
-        Args:
-            order_type (int): Order type (0 for buy, 1 for sell)
-            symbol (str): Symbol name
-            volume (float): Order volume (lot size)
-            price (float, optional): Price for pending orders. Defaults to 0.0 (market price).
-            stop_loss (float, optional): Stop loss price. Defaults to 0.0 (none).
-            take_profit (float, optional): Take profit price. Defaults to 0.0 (none).
-            comment (str, optional): Order comment. Defaults to "".
-
-        Returns:
-            dict: Order result information
-        """
+        """Place a new order in MT5."""
         self.ensure_connection()
 
         # Validate inputs
@@ -257,7 +244,7 @@ class MT5Connector:
         # Validate volume step
         volume_steps = round(volume / symbol_info['lot_step'])
         adjusted_volume = volume_steps * symbol_info['lot_step']
-        if adjusted_volume != volume:
+        if abs(adjusted_volume - volume) > 1e-10:  # Using epsilon for float comparison
             app_logger.warning(f"Volume adjusted from {volume} to {adjusted_volume} to match lot step")
             volume = adjusted_volume
 
@@ -292,25 +279,36 @@ class MT5Connector:
         # Send order
         order_desc = 'BUY' if order_type == 0 else 'SELL'
         app_logger.info(f"Placing {order_desc} order: {volume} lots of {symbol} at ${price:.2f}")
-        result = mt5.order_send(request)
 
-        if result.retcode != mt5.TRADE_RETCODE_DONE:
-            error_msg = f"Order failed: {result.retcode}, {result.comment}"
-            app_logger.error(error_msg)
-            raise RuntimeError(error_msg)
+        try:
+            result = mt5.order_send(request)
 
-        app_logger.info(f"Order placed successfully: Ticket #{result.order}")
+            if result is None:
+                error_code = mt5.last_error()
+                error_msg = f"Order failed: MT5 returned None, error code: {error_code}"
+                app_logger.error(error_msg)
+                raise RuntimeError(error_msg)
 
-        return {
-            'ticket': result.order,
-            'volume': volume,
-            'price': result.price,
-            'symbol': symbol,
-            'type': order_type,
-            'stop_loss': stop_loss,
-            'take_profit': take_profit,
-            'comment': comment
-        }
+            if result.retcode != mt5.TRADE_RETCODE_DONE:
+                error_msg = f"Order failed: {result.retcode}, {result.comment}"
+                app_logger.error(error_msg)
+                raise RuntimeError(error_msg)
+
+            app_logger.info(f"Order placed successfully: Ticket #{result.order}")
+
+            return {
+                'ticket': result.order,
+                'volume': volume,
+                'price': result.price,
+                'symbol': symbol,
+                'type': order_type,
+                'stop_loss': stop_loss,
+                'take_profit': take_profit,
+                'comment': comment
+            }
+        except Exception as e:
+            app_logger.error(f"Exception placing order: {str(e)}")
+            raise  # Re-raise to handle in calling function
 
     def modify_position(self, ticket, stop_loss=None, take_profit=None):
         """Modify an existing position's stop loss and take profit.
