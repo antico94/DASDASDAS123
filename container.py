@@ -1,4 +1,4 @@
-# container.py (updated)
+# container.py (updated with TripleMovingAverageStrategy)
 from dependency_injector import containers, providers
 from data.repository import (
     OHLCDataRepository,
@@ -13,6 +13,7 @@ from risk_management.risk_validator import RiskValidator
 from execution.order_manager import EnhancedOrderManager
 from execution.trailing_stop import EnhancedTrailingStopManager
 from strategies.moving_average import EnhancedMovingAverageStrategy
+from strategies.triple_moving_average import TripleMovingAverageStrategy
 from strategies.breakout import BreakoutStrategy
 from strategies.range_bound import RangeBoundStrategy
 from strategies.momentum_scalping import MomentumScalpingStrategy
@@ -80,6 +81,17 @@ class Container(containers.DeclarativeContainer):
         data_fetcher=data_fetcher
     )
 
+    # New Triple Moving Average Strategy as per the detailed plan
+    triple_ma_strategy = providers.Factory(
+        TripleMovingAverageStrategy,
+        symbol=config.symbol,
+        timeframe=config.triple_ma_timeframe,
+        fast_period=config.triple_ma_fast_period,
+        medium_period=config.triple_ma_medium_period,
+        slow_period=config.triple_ma_slow_period,
+        data_fetcher=data_fetcher
+    )
+
     breakout_strategy = providers.Factory(
         BreakoutStrategy,
         symbol=config.symbol,
@@ -104,14 +116,24 @@ class Container(containers.DeclarativeContainer):
         data_fetcher=data_fetcher
     )
 
+    # Updated MomentumScalpingStrategy with the new parameters
     momentum_scalping_strategy = providers.Factory(
         MomentumScalpingStrategy,
         symbol=config.symbol,
         timeframe=config.ms_timeframe,
-        ema_period=config.ms_ema_period,
+        rsi_period=config.ms_rsi_period,
+        rsi_threshold_high=config.ms_rsi_threshold_high,
+        rsi_threshold_low=config.ms_rsi_threshold_low,
+        stoch_k_period=config.ms_stoch_k_period,
+        stoch_d_period=config.ms_stoch_d_period,
+        stoch_slowing=config.ms_stoch_slowing,
         macd_fast=config.ms_macd_fast,
         macd_slow=config.ms_macd_slow,
         macd_signal=config.ms_macd_signal,
+        momentum_period=config.ms_momentum_period,
+        volume_threshold=config.ms_volume_threshold,
+        max_spread=config.ms_max_spread,
+        consider_session=config.ms_consider_session,
         data_fetcher=data_fetcher
     )
 

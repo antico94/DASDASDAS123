@@ -1,4 +1,4 @@
-# main.py (improved with new database logging)
+# main.py
 import os
 import sys
 import time
@@ -13,7 +13,6 @@ from data.models import AccountSnapshot, Base
 from db_logger.setup import initialize_logging
 from db_logger.logging_setup import setup_logging
 from db_logger.db_logger import DBLogger
-
 
 # Global flag for the main loop
 running = True
@@ -233,14 +232,14 @@ def run_strategies(enabled_strategies, container, signal_repo, simulation_mode=F
         # Use a session context manager for the core database operations.
         # All interactions requiring StrategySignal objects to be 'bound'
         # should happen within this block.
-        with DatabaseSession.get_session() as session: # Adjust if using session_scope
+        with DatabaseSession.get_session() as session:  # Adjust if using session_scope
             # Ensure any repository methods called within this block use this 'session' instance.
 
-            # Run Moving Average strategy if enabled
-            if "moving_average" in enabled_strategies:
-                logging.debug("Running Moving Average strategy")
-                ma_strategy = container.moving_average_strategy()
-                signals = ma_strategy.generate_signals() # Returns StrategySignal objects
+            # Run Triple Moving Average strategy if enabled
+            if "triple_ma" in enabled_strategies:
+                logging.debug("Running Triple Moving Average strategy")
+                triple_ma_strategy = container.triple_ma_strategy()
+                signals = triple_ma_strategy.generate_signals()  # Returns StrategySignal objects
 
                 # Process and save signals within the active session scope
                 for signal in signals:
@@ -250,11 +249,44 @@ def run_strategies(enabled_strategies, container, signal_repo, simulation_mode=F
                     if simulation_mode:
                         signal.comment = "SIMULATION_MODE"
 
-                    generated_signals.append(signal) # Keep the SQLAlchemy object reference
+                    generated_signals.append(signal)  # Keep the SQLAlchemy object reference
 
                     # Extract data needed for logging *while signal is bound to session*
-                    signal_types_for_log.append(signal.signal_type) # <-- Extract data here
-                    symbols_for_log.append(signal.symbol)       # <-- Extract data here
+                    signal_types_for_log.append(signal.signal_type)  # <-- Extract data here
+                    symbols_for_log.append(signal.symbol)  # <-- Extract data here
+
+                    # Log the signal to events table. Accessing attributes here is safe.
+                    signal_data = {
+                        "strategy": "triple_ma",
+                        "symbol": signal.symbol,
+                        "signal_type": signal.signal_type,
+                        "price": signal.price,
+                        "strength": signal.strength
+                    }
+                    DBLogger.log_event("SIGNAL",
+                                       f"Generated {signal.signal_type} signal for {signal.symbol} at {signal.price}",
+                                       "triple_ma", signal_data)
+                logging.debug(f"Processed {len(signals)} signals from Triple Moving Average strategy")
+
+            # Run Moving Average strategy if enabled
+            if "moving_average" in enabled_strategies:
+                logging.debug("Running Moving Average strategy")
+                ma_strategy = container.moving_average_strategy()
+                signals = ma_strategy.generate_signals()  # Returns StrategySignal objects
+
+                # Process and save signals within the active session scope
+                for signal in signals:
+                    # Add the signal object to the current session.
+                    session.add(signal)
+
+                    if simulation_mode:
+                        signal.comment = "SIMULATION_MODE"
+
+                    generated_signals.append(signal)  # Keep the SQLAlchemy object reference
+
+                    # Extract data needed for logging *while signal is bound to session*
+                    signal_types_for_log.append(signal.signal_type)  # <-- Extract data here
+                    symbols_for_log.append(signal.symbol)  # <-- Extract data here
 
                     # Log the signal to events table. Accessing attributes here is safe.
                     signal_data = {
@@ -269,7 +301,6 @@ def run_strategies(enabled_strategies, container, signal_repo, simulation_mode=F
                                        "moving_average", signal_data)
                 logging.debug(f"Processed {len(signals)} signals from Moving Average strategy")
 
-
             # Run Breakout strategy if enabled
             if "breakout" in enabled_strategies:
                 logging.debug("Running Breakout strategy")
@@ -281,8 +312,8 @@ def run_strategies(enabled_strategies, container, signal_repo, simulation_mode=F
                         signal.comment = "SIMULATION_MODE"
                     generated_signals.append(signal)
                     # Extract data needed for logging *while signal is bound to session*
-                    signal_types_for_log.append(signal.signal_type) # <-- Extract data here
-                    symbols_for_log.append(signal.symbol)       # <-- Extract data here
+                    signal_types_for_log.append(signal.signal_type)  # <-- Extract data here
+                    symbols_for_log.append(signal.symbol)  # <-- Extract data here
                     signal_data = {
                         "strategy": "breakout",
                         "symbol": signal.symbol,
@@ -295,7 +326,6 @@ def run_strategies(enabled_strategies, container, signal_repo, simulation_mode=F
                                        "breakout", signal_data)
                 logging.debug(f"Processed {len(signals)} signals from Breakout strategy")
 
-
             # Run Range-Bound strategy if enabled
             if "range_bound" in enabled_strategies:
                 logging.debug("Running Range-Bound strategy")
@@ -307,8 +337,8 @@ def run_strategies(enabled_strategies, container, signal_repo, simulation_mode=F
                         signal.comment = "SIMULATION_MODE"
                     generated_signals.append(signal)
                     # Extract data needed for logging *while signal is bound to session*
-                    signal_types_for_log.append(signal.signal_type) # <-- Extract data here
-                    symbols_for_log.append(signal.symbol)       # <-- Extract data here
+                    signal_types_for_log.append(signal.signal_type)  # <-- Extract data here
+                    symbols_for_log.append(signal.symbol)  # <-- Extract data here
                     signal_data = {
                         "strategy": "range_bound",
                         "symbol": signal.symbol,
@@ -321,7 +351,6 @@ def run_strategies(enabled_strategies, container, signal_repo, simulation_mode=F
                                        "range_bound", signal_data)
                 logging.debug(f"Processed {len(signals)} signals from Range-Bound strategy")
 
-
             # Run Momentum Scalping strategy if enabled
             if "momentum_scalping" in enabled_strategies:
                 logging.debug("Running Momentum Scalping strategy")
@@ -333,8 +362,8 @@ def run_strategies(enabled_strategies, container, signal_repo, simulation_mode=F
                         signal.comment = "SIMULATION_MODE"
                     generated_signals.append(signal)
                     # Extract data needed for logging *while signal is bound to session*
-                    signal_types_for_log.append(signal.signal_type) # <-- Extract data here
-                    symbols_for_log.append(signal.symbol)       # <-- Extract data here
+                    signal_types_for_log.append(signal.signal_type)  # <-- Extract data here
+                    symbols_for_log.append(signal.symbol)  # <-- Extract data here
                     signal_data = {
                         "strategy": "momentum_scalping",
                         "symbol": signal.symbol,
@@ -347,7 +376,6 @@ def run_strategies(enabled_strategies, container, signal_repo, simulation_mode=F
                                        "momentum_scalping", signal_data)
                 logging.debug(f"Processed {len(signals)} signals from Momentum Scalping strategy")
 
-
             # Run Ichimoku strategy if enabled
             if "ichimoku" in enabled_strategies:
                 logging.debug("Running Ichimoku strategy")
@@ -359,8 +387,8 @@ def run_strategies(enabled_strategies, container, signal_repo, simulation_mode=F
                         signal.comment = "SIMULATION_MODE"
                     generated_signals.append(signal)
                     # Extract data needed for logging *while signal is bound to session*
-                    signal_types_for_log.append(signal.signal_type) # <-- Extract data here
-                    symbols_for_log.append(signal.symbol)       # <-- Extract data here
+                    signal_types_for_log.append(signal.signal_type)  # <-- Extract data here
+                    symbols_for_log.append(signal.symbol)  # <-- Extract data here
                     signal_data = {
                         "strategy": "ichimoku",
                         "symbol": signal.symbol,
@@ -377,20 +405,21 @@ def run_strategies(enabled_strategies, container, signal_repo, simulation_mode=F
             # and then close the session.
             # Objects in generated_signals become detached after this point.
 
-
         # --- Code Execution Continues Here AFTER the session is closed ---
 
         if generated_signals:
             # Use the lists containing extracted data for logging,
             # as the objects in generated_signals are now detached.
-            logging.info(f"Generated {len(generated_signals)} signals: {signal_types_for_log} for symbols {symbols_for_log}")
+            logging.info(
+                f"Generated {len(generated_signals)} signals: {signal_types_for_log} for symbols {symbols_for_log}")
             # Use the extracted lists for the DBLogger event as well
-            DBLogger.log_event("INFO", f"Generated {len(generated_signals)} signals", "strategies", {"signal_types": signal_types_for_log, "symbols": symbols_for_log})
+            DBLogger.log_event("INFO", f"Generated {len(generated_signals)} signals", "strategies",
+                               {"signal_types": signal_types_for_log, "symbols": symbols_for_log})
 
 
     except Exception as e:
         # The session context manager should handle rollback on exception.
-        logging.error(f"Error running strategies: {str(e)}", exc_info=True) # Log traceback
+        logging.error(f"Error running strategies: {str(e)}", exc_info=True)  # Log traceback
         DBLogger.log_error("strategies", "Error running strategies", exception=e)
         return 0
 
@@ -472,6 +501,12 @@ def main():
         "ma_fast_period": Config.MA_FAST_PERIOD,
         "ma_slow_period": Config.MA_SLOW_PERIOD,
 
+        # Triple Moving Average Strategy settings
+        "triple_ma_timeframe": Config.TRIPLE_MA_TIMEFRAME,
+        "triple_ma_fast_period": Config.TRIPLE_MA_FAST_PERIOD,
+        "triple_ma_medium_period": Config.TRIPLE_MA_MEDIUM_PERIOD,
+        "triple_ma_slow_period": Config.TRIPLE_MA_SLOW_PERIOD,
+
         # Breakout Strategy settings
         "bo_timeframe": Config.BO_TIMEFRAME,
         "bo_lookback_periods": Config.BO_LOOKBACK_PERIODS,
@@ -488,12 +523,21 @@ def main():
         "rb_adx_period": Config.RB_ADX_PERIOD,
         "rb_adx_threshold": Config.RB_ADX_THRESHOLD,
 
-        # Momentum Scalping Strategy settings
+        # Momentum Scalping Strategy settings (new parameters)
         "ms_timeframe": Config.MS_TIMEFRAME,
-        "ms_ema_period": Config.MS_EMA_PERIOD,
+        "ms_rsi_period": Config.MS_RSI_PERIOD,
+        "ms_rsi_threshold_high": Config.MS_RSI_THRESHOLD_HIGH,
+        "ms_rsi_threshold_low": Config.MS_RSI_THRESHOLD_LOW,
+        "ms_stoch_k_period": Config.MS_STOCH_K_PERIOD,
+        "ms_stoch_d_period": Config.MS_STOCH_D_PERIOD,
+        "ms_stoch_slowing": Config.MS_STOCH_SLOWING,
         "ms_macd_fast": Config.MS_MACD_FAST,
         "ms_macd_slow": Config.MS_MACD_SLOW,
         "ms_macd_signal": Config.MS_MACD_SIGNAL,
+        "ms_momentum_period": Config.MS_MOMENTUM_PERIOD,
+        "ms_volume_threshold": Config.MS_VOLUME_THRESHOLD,
+        "ms_max_spread": Config.MS_MAX_SPREAD,
+        "ms_consider_session": Config.MS_CONSIDER_SESSION,
 
         # Ichimoku Strategy settings
         "ic_timeframe": Config.IC_TIMEFRAME,

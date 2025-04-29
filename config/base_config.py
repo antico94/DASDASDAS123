@@ -30,13 +30,18 @@ class BaseConfig:
     DB_PASSWORD = "password01!"
 
     # Strategy settings
-    STRATEGIES_ENABLED = ["moving_average", "breakout", "range_bound", "momentum_scalping", "ichimoku"]  # List of enabled strategies
+    STRATEGIES_ENABLED = ["triple_ma", "moving_average", "breakout", "range_bound", "momentum_scalping", "ichimoku"]  # Updated with triple_ma
 
-    # Strategy specific settings
-    # Moving Average Trend Strategy
+    # Original Moving Average Trend Strategy
     MA_FAST_PERIOD = 20
     MA_SLOW_PERIOD = 50
     MA_TIMEFRAME = "H1"
+
+    # Triple Moving Average Strategy (new)
+    TRIPLE_MA_FAST_PERIOD = 10      # Fast EMA period
+    TRIPLE_MA_MEDIUM_PERIOD = 50    # Medium SMA period
+    TRIPLE_MA_SLOW_PERIOD = 200     # Slow SMA period
+    TRIPLE_MA_TIMEFRAME = "H4"      # Default timeframe
 
     # Breakout Strategy
     BO_TIMEFRAME = "M15"
@@ -61,6 +66,16 @@ class BaseConfig:
     MS_MACD_FAST = 12
     MS_MACD_SLOW = 26
     MS_MACD_SIGNAL = 9
+    MS_RSI_PERIOD = 14
+    MS_RSI_THRESHOLD_HIGH = 60
+    MS_RSI_THRESHOLD_LOW = 40
+    MS_STOCH_K_PERIOD = 14
+    MS_STOCH_D_PERIOD = 3
+    MS_STOCH_SLOWING = 3
+    MS_MOMENTUM_PERIOD = 10
+    MS_VOLUME_THRESHOLD = 1.5
+    MS_MAX_SPREAD = 3.0
+    MS_CONSIDER_SESSION = True
 
     # Ichimoku Cloud Strategy
     IC_TIMEFRAME = "H1"
