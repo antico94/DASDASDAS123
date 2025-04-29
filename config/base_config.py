@@ -15,7 +15,7 @@ class BaseConfig:
     # Trading settings
     SYMBOL = "XAUUSD"
     DEFAULT_VOLUME = 0.01  # Minimum lot size
-    MAX_POSITIONS = 100  # Maximum number of open positions
+    MAX_POSITIONS = 200  # Maximum number of open positions
 
     # Risk management
     MAX_RISK_PER_TRADE_PERCENT = 1.0  # Maximum risk per trade as percentage of account

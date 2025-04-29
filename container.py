@@ -12,7 +12,6 @@ from risk_management.position_sizing import PositionSizer
 from risk_management.risk_validator import RiskValidator
 from execution.order_manager import EnhancedOrderManager
 from execution.trailing_stop import EnhancedTrailingStopManager
-from strategies.moving_average import EnhancedMovingAverageStrategy
 from strategies.triple_moving_average import TripleMovingAverageStrategy
 from strategies.breakout import BreakoutStrategy
 from strategies.range_bound import RangeBoundStrategy
@@ -68,16 +67,6 @@ class Container(containers.DeclarativeContainer):
         EnhancedTrailingStopManager,
         connector=mt5_connector,
         trade_repository=trade_repository,
-        data_fetcher=data_fetcher
-    )
-
-    # Strategies
-    moving_average_strategy = providers.Factory(
-        EnhancedMovingAverageStrategy,
-        symbol=config.symbol,
-        timeframe=config.ma_timeframe,
-        fast_period=config.ma_fast_period,
-        slow_period=config.ma_slow_period,
         data_fetcher=data_fetcher
     )
 

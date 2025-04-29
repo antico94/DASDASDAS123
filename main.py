@@ -268,39 +268,6 @@ def run_strategies(enabled_strategies, container, signal_repo, simulation_mode=F
                                        "triple_ma", signal_data)
                 logging.debug(f"Processed {len(signals)} signals from Triple Moving Average strategy")
 
-            # Run Moving Average strategy if enabled
-            if "moving_average" in enabled_strategies:
-                logging.debug("Running Moving Average strategy")
-                ma_strategy = container.moving_average_strategy()
-                signals = ma_strategy.generate_signals()  # Returns StrategySignal objects
-
-                # Process and save signals within the active session scope
-                for signal in signals:
-                    # Add the signal object to the current session.
-                    session.add(signal)
-
-                    if simulation_mode:
-                        signal.comment = "SIMULATION_MODE"
-
-                    generated_signals.append(signal)  # Keep the SQLAlchemy object reference
-
-                    # Extract data needed for logging *while signal is bound to session*
-                    signal_types_for_log.append(signal.signal_type)  # <-- Extract data here
-                    symbols_for_log.append(signal.symbol)  # <-- Extract data here
-
-                    # Log the signal to events table. Accessing attributes here is safe.
-                    signal_data = {
-                        "strategy": "moving_average",
-                        "symbol": signal.symbol,
-                        "signal_type": signal.signal_type,
-                        "price": signal.price,
-                        "strength": signal.strength
-                    }
-                    DBLogger.log_event("SIGNAL",
-                                       f"Generated {signal.signal_type} signal for {signal.symbol} at {signal.price}",
-                                       "moving_average", signal_data)
-                logging.debug(f"Processed {len(signals)} signals from Moving Average strategy")
-
             # Run Breakout strategy if enabled
             if "breakout" in enabled_strategies:
                 logging.debug("Running Breakout strategy")
