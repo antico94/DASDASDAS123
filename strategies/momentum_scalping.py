@@ -1,7 +1,9 @@
 # strategies/momentum_scalping.py
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
-from datetime import datetime, time
+
 from db_logger.db_logger import DBLogger
 from strategies.base_strategy import BaseStrategy
 
@@ -98,15 +100,8 @@ class MomentumScalpingStrategy(BaseStrategy):
                            f"Momentum: {momentum_period}, Volume threshold: {volume_threshold}",
                            "MomentumScalpingStrategy")
 
-    def calculate_indicators(self, data):
-        """Calculate strategy indicators on OHLC data.
-
-        Args:
-            data (pandas.DataFrame): OHLC data
-
-        Returns:
-            pandas.DataFrame: Data with indicators added
-        """
+    def _calculate_indicators(self, data):
+        """Calculate strategy indicators on OHLC data."""
         if len(data) < self.min_required_candles:
             DBLogger.log_event("WARNING",
                                f"Insufficient data for momentum calculations. "
@@ -182,14 +177,7 @@ class MomentumScalpingStrategy(BaseStrategy):
         return data
 
     def _calculate_stochastic(self, data):
-        """Calculate Stochastic Oscillator.
-
-        Args:
-            data (pandas.DataFrame): OHLC data
-
-        Returns:
-            pandas.DataFrame: Data with Stochastic indicator added
-        """
+        """Calculate Stochastic Oscillator."""
         # Calculate %K (Fast Stochastic)
         low_min = data['low'].rolling(window=self.stoch_k_period).min()
         high_max = data['high'].rolling(window=self.stoch_k_period).max()
@@ -210,30 +198,26 @@ class MomentumScalpingStrategy(BaseStrategy):
         data['stoch_d'] = data['stoch_k'].rolling(window=self.stoch_d_period).mean()
 
         # Calculate if K is above D (bullish) or below D (bearish)
-        data['stoch_k_above_d'] = (data['stoch_k'] > data['stoch_d']).astype(int)
+        # Correct: Use numpy for array-like operations
+        data['stoch_k_above_d'] = np.where(data['stoch_k'] > data['stoch_d'], 1, 0)
 
         # Calculate if we're in overbought/oversold territories
-        data['stoch_overbought'] = (data['stoch_k'] > 80).astype(int)
-        data['stoch_oversold'] = (data['stoch_k'] < 20).astype(int)
+        data['stoch_overbought'] = np.where(data['stoch_k'] > 80, 1, 0)
+        data['stoch_oversold'] = np.where(data['stoch_k'] < 20, 1, 0)
 
         # Stochastic crossovers
-        data['stoch_bull_cross'] = ((data['stoch_k'] > data['stoch_d']) &
-                                    (data['stoch_k'].shift(1) <= data['stoch_d'].shift(1))).astype(int)
-        data['stoch_bear_cross'] = ((data['stoch_k'] < data['stoch_d']) &
-                                    (data['stoch_k'].shift(1) >= data['stoch_d'].shift(1))).astype(int)
+        stoch_bull_cross = ((data['stoch_k'] > data['stoch_d']) &
+                            (data['stoch_k'].shift(1) <= data['stoch_d'].shift(1)))
+        data['stoch_bull_cross'] = np.where(stoch_bull_cross, 1, 0)
+
+        stoch_bear_cross = ((data['stoch_k'] < data['stoch_d']) &
+                            (data['stoch_k'].shift(1) >= data['stoch_d'].shift(1)))
+        data['stoch_bear_cross'] = np.where(stoch_bear_cross, 1, 0)
 
         return data
 
     def _calculate_macd(self, data):
-        """Calculate Moving Average Convergence Divergence (MACD).
-
-        Args:
-            data (pandas.DataFrame): OHLC data
-
-        Returns:
-            pandas.DataFrame: Data with MACD indicator added
-        """
-        # Calculate EMAs
+        """Calculate Moving Average Convergence Divergence (MACD)."""
         ema_fast = data['close'].ewm(span=self.macd_fast, adjust=False).mean()
         ema_slow = data['close'].ewm(span=self.macd_slow, adjust=False).mean()
 
@@ -247,11 +231,14 @@ class MomentumScalpingStrategy(BaseStrategy):
         # Calculate MACD momentum (histogram direction)
         data['macd_histogram_direction'] = data['macd_histogram'].diff(1)
 
-        # Calculate MACD crosses
-        data['macd_bull_cross'] = ((data['macd'] > data['macd_signal']) &
-                                   (data['macd'].shift(1) <= data['macd_signal'].shift(1))).astype(int)
-        data['macd_bear_cross'] = ((data['macd'] < data['macd_signal']) &
-                                   (data['macd'].shift(1) >= data['macd_signal'].shift(1))).astype(int)
+        # Calculate MACD crosses - fix astype error
+        macd_bull_cross = ((data['macd'] > data['macd_signal']) &
+                           (data['macd'].shift(1) <= data['macd_signal'].shift(1)))
+        data['macd_bull_cross'] = np.where(macd_bull_cross, 1, 0)
+
+        macd_bear_cross = ((data['macd'] < data['macd_signal']) &
+                           (data['macd'].shift(1) >= data['macd_signal'].shift(1)))
+        data['macd_bear_cross'] = np.where(macd_bear_cross, 1, 0)
 
         return data
 
@@ -314,8 +301,8 @@ class MomentumScalpingStrategy(BaseStrategy):
         # Calculate relative volume (current volume vs average)
         data['volume_ratio'] = data['volume'] / data['volume_ma']
 
-        # Flag high volume bars
-        data['high_volume'] = (data['volume_ratio'] >= self.volume_threshold).astype(int)
+        # Flag high volume bars - fix astype error
+        data['high_volume'] = np.where(data['volume_ratio'] >= self.volume_threshold, 1, 0)
 
         # Calculate volume change
         data['volume_change'] = data['volume'].pct_change()
@@ -342,26 +329,19 @@ class MomentumScalpingStrategy(BaseStrategy):
         hours = pd.Series([t.hour if hasattr(t, 'hour') else t.to_pydatetime().hour
                            for t in data.index])
 
-        # London/NY overlap (13-17 UTC is optimal)
-        data['good_session'] = ((hours >= 13) & (hours < 17)).astype(int)
+        # London/NY overlap (13-17 UTC is optimal) - fix astype error
+        data['good_session'] = np.where((hours >= 13) & (hours < 17), 1, 0)
 
-        # Asian session (lower liquidity, avoid)
-        data['low_liquidity_session'] = ((hours >= 0) & (hours < 6)).astype(int)
+        # Asian session (lower liquidity, avoid) - fix astype error
+        data['low_liquidity_session'] = np.where((hours >= 0) & (hours < 6), 1, 0)
 
         return data
 
+    # strategies/momentum_scalping.py - Key fixes
     def _identify_signals(self, data):
-        """Identify momentum scalping signals.
-
-        Args:
-            data (pandas.DataFrame): OHLC data with indicators
-
-        Returns:
-            pandas.DataFrame: Data with signal information
-        """
+        """Identify momentum scalping signals according to the plan specifications."""
         # Initialize signal columns
         data['signal'] = 0  # 0: No signal, 1: Buy, -1: Sell
-        data['prior_trend'] = 0  # 0: None, 1: Uptrend, -1: Downtrend
         data['signal_strength'] = 0.0
         data['stop_loss'] = np.nan
         data['take_profit'] = np.nan
@@ -373,229 +353,196 @@ class MomentumScalpingStrategy(BaseStrategy):
             if i < 5:
                 continue
 
-            # Get indicator values for current bar
+            # Get current values
             current_close = data.iloc[i]['close']
             current_high = data.iloc[i]['high']
             current_low = data.iloc[i]['low']
 
-            # Make sure all required indicators exist
-            if ('rsi' not in data.columns or
-                    'macd_histogram' not in data.columns or
-                    'stoch_k' not in data.columns or
-                    'momentum' not in data.columns):
+            # Get indicator values - check they exist first
+            required_columns = ['rsi', 'macd', 'macd_signal', 'macd_histogram',
+                                'stoch_k', 'stoch_d', 'momentum', 'volume_ratio']
+            if not all(col in data.columns for col in required_columns):
                 continue
 
             current_rsi = data.iloc[i]['rsi']
+            current_macd = data.iloc[i]['macd']
+            current_macd_signal = data.iloc[i]['macd_signal']
             current_macd_hist = data.iloc[i]['macd_histogram']
             current_stoch_k = data.iloc[i]['stoch_k']
             current_stoch_d = data.iloc[i]['stoch_d']
             current_momentum = data.iloc[i]['momentum']
             current_volume_ratio = data.iloc[i]['volume_ratio']
 
-            # Get indicator values for previous bar
+            # Previous values for comparison
             prev_close = data.iloc[i - 1]['close']
-            prev_rsi = data.iloc[i - 1]['rsi']
-            prev_macd_hist = data.iloc[i - 1]['macd_histogram']
+            prev_high = data.iloc[i - 1]['high']
+            prev_low = data.iloc[i - 1]['low']
             prev_stoch_k = data.iloc[i - 1]['stoch_k']
             prev_stoch_d = data.iloc[i - 1]['stoch_d']
+            prev_macd_hist = data.iloc[i - 1]['macd_histogram']
 
-            # Check if this is a good trading session
+            # Check session time if enabled
             good_session = True
             if self.consider_session and 'good_session' in data.columns:
                 good_session = data.iloc[i]['good_session'] == 1
 
-            # Looking back to determine prior trend
-            # Price relative to EMA and MACD histogram shows trend direction
-            price_below_ema_before = data.iloc[i - 3:i - 1]['close'].lt(
-                data.iloc[i - 3:i - 1]['ema']).all() if 'ema' in data.columns else False
-            price_above_ema_before = data.iloc[i - 3:i - 1]['close'].gt(
-                data.iloc[i - 3:i - 1]['ema']).all() if 'ema' in data.columns else False
+            # PRICE ACTION TRIGGER: Check for breakout or strong momentum candle
+            # Per plan: "a breakout is defined as price moving beyond a key level and holding beyond it"
+            # Look back for recent high/low levels
+            lookback = 20  # Look back 20 bars for significant levels
+            lookback_start = max(0, i - lookback)
+            recent_high = data.iloc[lookback_start:i]['high'].max()
+            recent_low = data.iloc[lookback_start:i]['low'].min()
 
-            macd_hist_negative_before = data.iloc[i - 3:i - 1]['macd_histogram'].lt(0).all()
-            macd_hist_positive_before = data.iloc[i - 3:i - 1]['macd_histogram'].gt(0).all()
+            # Calculate average candle size for comparison
+            avg_candle_size = (data.iloc[lookback_start:i]['high'] - data.iloc[lookback_start:i]['low']).mean()
+            current_candle_size = current_high - current_low
 
-            # Determine prior trend
-            if price_below_ema_before and macd_hist_negative_before:
-                data.iloc[i, data.columns.get_loc('prior_trend')] = -1  # Downtrend
-            elif price_above_ema_before and macd_hist_positive_before:
-                data.iloc[i, data.columns.get_loc('prior_trend')] = 1  # Uptrend
+            # Check if current candle is significantly larger (breakout condition)
+            large_candle = current_candle_size > (avg_candle_size * 1.5)
 
-            # Determine current momentum state
-            bullish_momentum = (
-                    current_rsi > self.rsi_threshold_high and
-                    current_macd_hist > 0 and
-                    current_stoch_k > current_stoch_d and
-                    current_momentum > 100.2  # 0.2% price increase over momentum period
+            # Check for breakout above recent high or below recent low
+            breakout_up = current_close > recent_high and current_close > prev_high
+            breakout_down = current_close < recent_low and current_close < prev_low
+
+            # MOMENTUM INDICATOR CONFIRMATION
+            # Per plan: "RSI > 60 and rising for bullish momentum"
+            bullish_rsi = current_rsi > self.rsi_threshold_high
+            bearish_rsi = current_rsi < self.rsi_threshold_low
+
+            # MACD confirmation
+            # Per plan: "MACD histogram should be > 0 and preferably increasing"
+            bullish_macd = current_macd_hist > 0 and current_macd > current_macd_signal
+            bearish_macd = current_macd_hist < 0 and current_macd < current_macd_signal
+
+            # Stochastic confirmation
+            # Per plan: "Stochastic %K crossing above %D, or already in the 80+ zone"
+            stoch_bullish_cross = (current_stoch_k > current_stoch_d) and (prev_stoch_k <= prev_stoch_d)
+            stoch_bearish_cross = (current_stoch_k < current_stoch_d) and (prev_stoch_k >= prev_stoch_d)
+            stoch_bullish = current_stoch_k > current_stoch_d or current_stoch_k > 80
+            stoch_bearish = current_stoch_k < current_stoch_d or current_stoch_k < 20
+
+            # Momentum/ROC
+            # Per plan: "Momentum > 100.20 (+0.2%) for long"
+            bullish_momentum = current_momentum > 100.2
+            bearish_momentum = current_momentum < 99.8
+
+            # VOLUME SURGE CONFIRMATION
+            # Per plan: "Volume should exceed recent averages (>150% of 20-bar average)"
+            high_volume = current_volume_ratio >= self.volume_threshold  # Already calculated in preparation
+
+            # COMBINED ENTRY CONDITIONS
+            # For a long entry: RSI>60, MACD>0, Stochastic bullish, Volume high, Price breakout up
+            bullish_conditions = (
+                    bullish_rsi and
+                    bullish_macd and
+                    (stoch_bullish or stoch_bullish_cross) and  # Using stochastic crossover signal
+                    bullish_momentum and
+                    high_volume and
+                    (breakout_up or large_candle) and
+                    good_session
             )
 
-            bearish_momentum = (
-                    current_rsi < self.rsi_threshold_low and
-                    current_macd_hist < 0 and
-                    current_stoch_k < current_stoch_d and
-                    current_momentum < 99.8  # 0.2% price decrease over momentum period
+            # For a short entry: RSI<40, MACD<0, Stochastic bearish, Volume high, Price breakout down
+            bearish_conditions = (
+                    bearish_rsi and
+                    bearish_macd and
+                    (stoch_bearish or stoch_bearish_cross) and  # Using stochastic crossover signal
+                    bearish_momentum and
+                    high_volume and
+                    (breakout_down or large_candle) and
+                    good_session
             )
 
-            # For test data, add alternative conditions to ensure signal generation
-            # Only use these if regular conditions don't detect momentum
-            if not bullish_momentum:
-                bullish_alt = (
-                        current_rsi > 55 and  # More relaxed threshold for tests
-                        current_macd_hist > 0 and
-                        current_close > prev_close * 1.001  # Price is moving up
-                )
-                bullish_momentum = bullish_momentum or bullish_alt
+            # Check for BUY signal
+            if bullish_conditions:
+                # Calculate signal strength based on multiple factors
+                strength_factors = [
+                    (current_rsi - 50) / 25,  # Scale 0-1 based on RSI strength
+                    current_macd_hist / data.iloc[i]['atr'],  # Scale relative to volatility
+                    (current_stoch_k - 50) / 50,  # Scale based on stochastic
+                    (current_volume_ratio - 1) / self.volume_threshold  # Volume strength
+                ]
 
-            if not bearish_momentum:
-                bearish_alt = (
-                        current_rsi < 45 and  # More relaxed threshold for tests
-                        current_macd_hist < 0 and
-                        current_close < prev_close * 0.999  # Price is moving down
-                )
-                bearish_momentum = bearish_momentum or bearish_alt
+                # Add extra strength for stochastic crossover, especially from oversold
+                if stoch_bullish_cross:
+                    crossover_from_oversold = prev_stoch_k < 20
+                    strength_factors.append(0.2 if crossover_from_oversold else 0.1)
 
-            # Check volume confirmation
-            volume_confirmed = current_volume_ratio >= self.volume_threshold
+                # Average the factors and cap at 1.0
+                signal_strength = min(1.0, sum([max(0, s) for s in strength_factors]) / len(strength_factors))
 
-            # Calculate percentage change for breakout detection
-            pct_change = (current_close - prev_close) / prev_close * 100
-
-            # Detect breakouts - larger than normal price movement
-            # For Gold, even a 0.2-0.3% move in a single bar can be significant
-            breakout_up = pct_change > 0.2
-            breakout_down = pct_change < -0.2
-
-            # For test data, add alternative breakout detection using relative prices
-            if not breakout_up:
-                # Test if price broke above the highest high of the last 3 bars
-                recent_highs = data.iloc[i - 4:i - 1]['high']
-                highest_high = recent_highs.max() if not recent_highs.empty else current_high
-                breakout_up = current_high > highest_high
-
-            if not breakout_down:
-                # Test if price broke below the lowest low of the last 3 bars
-                recent_lows = data.iloc[i - 4:i - 1]['low']
-                lowest_low = recent_lows.min() if not recent_lows.empty else current_low
-                breakout_down = current_low < lowest_low
-
-            # Find a recent swing low/high for stop placement
-            recent_lows = data.iloc[i - 5:i]['low'].tolist()
-            recent_swing_low = min(recent_lows)
-
-            recent_highs = data.iloc[i - 5:i]['high'].tolist()
-            recent_swing_high = max(recent_highs)
-
-            # BUY Signal Conditions:
-            # 1. RSI shows bullish momentum (>60)
-            # 2. MACD histogram is positive
-            # 3. Stochastic shows bullish momentum (K>D)
-            # 4. Volume confirms the move (>1.5x average)
-            # 5. Price is breaking out upwards or was in a downtrend and now reversing
-            if (bullish_momentum and
-                    volume_confirmed and
-                    (breakout_up or data.iloc[i]['prior_trend'] == -1) and
-                    good_session):
-
-                # Calculate stop loss (based on recent swing low or ATR)
+                # Calculate stop loss (use ATR for this example)
                 atr = data.iloc[i]['atr']
-                # For momentum trades, tight stops are used
-                max_stop_distance = atr * 2  # Maximum 2x ATR stop
+                stop_loss = current_close - (atr * 1.5)
 
-                # Use recent swing low as a logical stop point
-                stop_loss = recent_swing_low
-
-                # But make sure it's not too far
-                if current_close - stop_loss > max_stop_distance:
-                    stop_loss = current_close - atr * 1.5
-
-                # Calculate take profit (1:1 risk-reward initially)
+                # Calculate take profit (1:1 risk-reward for now)
                 risk = current_close - stop_loss
                 take_profit = current_close + risk
 
-                # Calculate signal strength based on confluence factors
-                strength_factors = [
-                    (current_rsi - 50) / 25,  # 0-1 scale based on how far above 50
-                    current_macd_hist / atr,  # Relative to volatility
-                    (current_stoch_k - 50) / 50,  # 0-1 scale based on position
-                    (current_volume_ratio - 1) / self.volume_threshold  # How much above threshold
-                ]
-
-                # Average the factors but cap at 1.0
-                signal_strength = min(1.0, sum([max(0, s) for s in strength_factors]) / 4)
-
-                # Set the signal
-                data.iloc[i, data.columns.get_loc('signal')] = 1  # Buy
+                # Set signal values
+                data.iloc[i, data.columns.get_loc('signal')] = 1  # Buy signal
                 data.iloc[i, data.columns.get_loc('signal_strength')] = signal_strength
                 data.iloc[i, data.columns.get_loc('stop_loss')] = stop_loss
                 data.iloc[i, data.columns.get_loc('take_profit')] = take_profit
-                data.iloc[i, data.columns.get_loc('momentum_state')] = 1  # Bullish
+                data.iloc[i, data.columns.get_loc('momentum_state')] = 1  # Bullish state
 
-            # SELL Signal Conditions:
-            # 1. RSI shows bearish momentum (<40)
-            # 2. MACD histogram is negative
-            # 3. Stochastic shows bearish momentum (K<D)
-            # 4. Volume confirms the move (>1.5x average)
-            # 5. Price is breaking down or was in uptrend and now reversing
-            elif (bearish_momentum and
-                  volume_confirmed and
-                  (breakout_down or data.iloc[i]['prior_trend'] == 1) and
-                  good_session):
+            # Check for SELL signal
+            elif bearish_conditions:
+                # Calculate signal strength based on multiple factors
+                strength_factors = [
+                    (50 - current_rsi) / 25,  # Scale 0-1 based on RSI strength
+                    -current_macd_hist / data.iloc[i]['atr'],  # Scale relative to volatility
+                    (50 - current_stoch_k) / 50,  # Scale based on stochastic
+                    (current_volume_ratio - 1) / self.volume_threshold  # Volume strength
+                ]
 
-                # Calculate stop loss (based on recent swing high or ATR)
+                # Add extra strength for stochastic crossover, especially from overbought
+                if stoch_bearish_cross:
+                    crossover_from_overbought = prev_stoch_k > 80
+                    strength_factors.append(0.2 if crossover_from_overbought else 0.1)
+
+                # Average the factors and cap at 1.0
+                signal_strength = min(1.0, sum([max(0, s) for s in strength_factors]) / len(strength_factors))
+
+                # Calculate stop loss
                 atr = data.iloc[i]['atr']
-                # For momentum trades, tight stops are used
-                max_stop_distance = atr * 2  # Maximum 2x ATR stop
+                stop_loss = current_close + (atr * 1.5)
 
-                # Use recent swing high as a logical stop point
-                stop_loss = recent_swing_high
-
-                # But make sure it's not too far
-                if stop_loss - current_close > max_stop_distance:
-                    stop_loss = current_close + atr * 1.5
-
-                # Calculate take profit (1:1 risk-reward initially)
+                # Calculate take profit (1:1 risk-reward for now)
                 risk = stop_loss - current_close
                 take_profit = current_close - risk
 
-                # Calculate signal strength based on confluence factors
-                strength_factors = [
-                    (50 - current_rsi) / 25,  # 0-1 scale based on how far below 50
-                    -current_macd_hist / atr,  # Relative to volatility
-                    (50 - current_stoch_k) / 50,  # 0-1 scale based on position
-                    (current_volume_ratio - 1) / self.volume_threshold  # How much above threshold
-                ]
-
-                # Average the factors but cap at 1.0
-                signal_strength = min(1.0, sum([max(0, s) for s in strength_factors]) / 4)
-
-                # Set the signal
-                data.iloc[i, data.columns.get_loc('signal')] = -1  # Sell
+                # Set signal values
+                data.iloc[i, data.columns.get_loc('signal')] = -1  # Sell signal
                 data.iloc[i, data.columns.get_loc('signal_strength')] = signal_strength
                 data.iloc[i, data.columns.get_loc('stop_loss')] = stop_loss
                 data.iloc[i, data.columns.get_loc('take_profit')] = take_profit
-                data.iloc[i, data.columns.get_loc('momentum_state')] = -1  # Bearish
+                data.iloc[i, data.columns.get_loc('momentum_state')] = -1  # Bearish state
 
-            # Identify momentum fading conditions (for exit signals)
+            # MOMENTUM FADING DETECTION FOR EXITS
+            # Per plan: "exit when RSI drops back below 50, MACD histogram shrinks, etc."
             if i > 0 and data.iloc[i - 1]['momentum_state'] == 1:  # Previous bar was bullish
-                # Check if momentum is now fading
+                # Check if momentum is fading
                 momentum_fading = (
                         current_rsi < 50 or
                         current_macd_hist < prev_macd_hist or  # Histogram shrinking
-                        (current_stoch_k < current_stoch_d and prev_stoch_k >= prev_stoch_d)  # Stoch crossed down
+                        (current_stoch_k < current_stoch_d and prev_stoch_k >= prev_stoch_d)  # Bearish stoch cross
                 )
 
                 if momentum_fading:
-                    data.iloc[i, data.columns.get_loc('momentum_fading')] = 1
+                    data.iloc[i, data.columns.get_loc('momentum_fading')] = 1  # Bullish momentum fading
 
             elif i > 0 and data.iloc[i - 1]['momentum_state'] == -1:  # Previous bar was bearish
-                # Check if momentum is now fading
+                # Check if momentum is fading
                 momentum_fading = (
                         current_rsi > 50 or
-                        current_macd_hist > prev_macd_hist or  # Histogram shrinking in negative territory
-                        (current_stoch_k > current_stoch_d and prev_stoch_k <= prev_stoch_d)  # Stoch crossed up
+                        current_macd_hist > prev_macd_hist or  # Histogram shrinking (in negative)
+                        (current_stoch_k > current_stoch_d and prev_stoch_k <= prev_stoch_d)  # Bullish stoch cross
                 )
 
                 if momentum_fading:
-                    data.iloc[i, data.columns.get_loc('momentum_fading')] = -1
+                    data.iloc[i, data.columns.get_loc('momentum_fading')] = -1  # Bearish momentum fading
 
         return data
 
@@ -615,7 +562,7 @@ class MomentumScalpingStrategy(BaseStrategy):
 
         # Calculate indicators
         try:
-            data = self.calculate_indicators(data)
+            data = self._calculate_indicators(data)
         except Exception as e:
             DBLogger.log_error("MomentumScalpingStrategy", "Error calculating indicators", exception=e)
             return []
@@ -662,7 +609,6 @@ class MomentumScalpingStrategy(BaseStrategy):
             # Create BUY signal
             entry_price = last_candle['close']
             stop_loss = last_candle['stop_loss']
-            take_profit = last_candle['take_profit']
 
             # Ensure stop loss is valid
             if stop_loss >= entry_price:
@@ -706,7 +652,6 @@ class MomentumScalpingStrategy(BaseStrategy):
             # Create SELL signal
             entry_price = last_candle['close']
             stop_loss = last_candle['stop_loss']
-            take_profit = last_candle['take_profit']
 
             # Ensure stop loss is valid
             if stop_loss <= entry_price:
