@@ -98,7 +98,11 @@ class TripleMovingAverageStrategy(BaseStrategy):
 
         # Detect crossovers (changes in ema_above_sma status)
         shifted_ema_above = data['ema_above_sma'].shift(1)
-        filled_shifted_ema_above = shifted_ema_above.fillna(False).infer_objects(copy=False)
+
+        # Create boolean series without using fillna directly
+        # Replace NaN values with False using numpy where
+        has_na = shifted_ema_above.isna()
+        filled_shifted_ema_above = np.where(has_na, False, shifted_ema_above)
 
         data['cross_up'] = (data['ema_above_sma'] & ~filled_shifted_ema_above).astype(int)
         data['cross_down'] = (~data['ema_above_sma'] & filled_shifted_ema_above).astype(int)

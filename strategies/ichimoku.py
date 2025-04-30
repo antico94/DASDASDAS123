@@ -6,16 +6,24 @@ from strategies.base_strategy import BaseStrategy
 
 
 class IchimokuStrategy(BaseStrategy):
-    """Ichimoku Cloud Strategy for XAU/USD."""
+    """Ichimoku Kinko Hyo Strategy for XAU/USD.
 
-    def __init__(self, symbol="XAUUSD", timeframe="H1",
+    This strategy uses the Ichimoku indicator to trade XAU/USD with a blend of
+    trend-following and reversal signals. It identifies high-probability entry and exit
+    signals using multiple Ichimoku components (Cloud, Tenkan/Kijun crosses, Chikou Span).
+
+    The strategy operates on H4 timeframe to balance signal reliability and frequency,
+    using default Ichimoku settings (9, 26, 52) which work well for gold's behavior.
+    """
+
+    def __init__(self, symbol="XAUUSD", timeframe="H4",
                  tenkan_period=9, kijun_period=26, senkou_b_period=52,
                  data_fetcher=None):
         """Initialize the Ichimoku Cloud strategy.
 
         Args:
             symbol (str, optional): Symbol to trade. Defaults to "XAUUSD".
-            timeframe (str, optional): Chart timeframe. Defaults to "H1".
+            timeframe (str, optional): Chart timeframe. Defaults to "H4".
             tenkan_period (int, optional): Tenkan-sen period. Defaults to 9.
             kijun_period (int, optional): Kijun-sen period. Defaults to 26.
             senkou_b_period (int, optional): Senkou Span B period. Defaults to 52.
@@ -38,27 +46,32 @@ class IchimokuStrategy(BaseStrategy):
         self.senkou_b_period = senkou_b_period
 
         # Ensure we fetch enough data for calculations
-        self.min_required_candles = kijun_period * 2 + senkou_b_period + 30  # Extra for displaced Senkou spans and Chikou Span
+        # We need enough data for:
+        # 1. Senkou Span B calculation (52 periods)
+        # 2. The displacement (26 periods forward)
+        # 3. Chikou Span (26 periods back)
+        # 4. Extra bars for analysis
+        self.min_required_candles = self.senkou_b_period + self.kijun_period * 2 + 30
 
         DBLogger.log_event("INFO",
-            f"Initialized Ichimoku Cloud strategy: {symbol} {timeframe}, "
-            f"Tenkan: {tenkan_period}, Kijun: {kijun_period}, Senkou B: {senkou_b_period}",
-            "IchimokuStrategy")
+                           f"Initialized Ichimoku Cloud strategy: {symbol} {timeframe}, "
+                           f"Tenkan: {tenkan_period}, Kijun: {kijun_period}, Senkou B: {senkou_b_period}",
+                           "IchimokuStrategy")
 
     def calculate_indicators(self, data):
-        """Calculate strategy indicators on OHLC data.
+        """Calculate Ichimoku indicators on OHLC data.
 
         Args:
             data (pandas.DataFrame): OHLC data
 
         Returns:
-            pandas.DataFrame: Data with indicators added
+            pandas.DataFrame: Data with Ichimoku indicators added
         """
         if len(data) < self.min_required_candles:
             DBLogger.log_event("WARNING",
-                f"Insufficient data for Ichimoku calculations. "
-                f"Need at least {self.min_required_candles} candles.",
-                "IchimokuStrategy")
+                               f"Insufficient data for Ichimoku calculations. "
+                               f"Need at least {self.min_required_candles} candles.",
+                               "IchimokuStrategy")
             return data
 
         # Calculate Tenkan-sen (Conversion Line): (highest high + lowest low) / 2 for the past tenkan_period
@@ -94,16 +107,29 @@ class IchimokuStrategy(BaseStrategy):
         tr = pd.DataFrame({"tr1": tr1, "tr2": tr2, "tr3": tr3}).max(axis=1)
         data['atr'] = tr.rolling(window=14).mean()
 
-        # Identify Kumo (Cloud) color
+        # Identify Kumo (Cloud) color - Bullish when Senkou A > Senkou B
         data['cloud_bullish'] = data['senkou_span_a'] > data['senkou_span_b']
 
-        # Identify TK cross signals
+        # Calculate cloud top and bottom at each position
+        data['cloud_top'] = data[['senkou_span_a', 'senkou_span_b']].max(axis=1)
+        data['cloud_bottom'] = data[['senkou_span_a', 'senkou_span_b']].min(axis=1)
+
+        # Identify if price is above, below, or inside the cloud
+        data['price_above_cloud'] = data['close'] > data['cloud_top']
+        data['price_below_cloud'] = data['close'] < data['cloud_bottom']
+        data['price_in_cloud'] = (~data['price_above_cloud']) & (~data['price_below_cloud'])
+
+        # Check Chikou Span position relative to price 26 periods ago
+        data['chikou_above_price'] = data['chikou_span'].shift(self.kijun_period) > data['close']
+        data['chikou_below_price'] = data['chikou_span'].shift(self.kijun_period) < data['close']
+
+        # Identify TK cross signals and all types of signals
         data = self._identify_signals(data)
 
         return data
 
     def _identify_signals(self, data):
-        """Identify Ichimoku signals.
+        """Identify both trend-following and reversal signals based on Ichimoku components.
 
         Args:
             data (pandas.DataFrame): OHLC data with Ichimoku indicators
@@ -113,13 +139,15 @@ class IchimokuStrategy(BaseStrategy):
         """
         # Initialize signal columns
         data['signal'] = 0  # 0: No signal, 1: Buy, -1: Sell
+        data['signal_type'] = ""  # "TREND" or "REVERSAL"
         data['signal_strength'] = 0.0
         data['stop_loss'] = np.nan
-        data['take_profit'] = np.nan
+        data['take_profit_1'] = np.nan
+        data['take_profit_2'] = np.nan
 
-        for i in range(self.kijun_period + 10, len(data)):
+        for i in range(self.kijun_period * 2, len(data)):
             # Skip if not enough prior data
-            if i < self.kijun_period + 10:
+            if i < self.kijun_period * 2:
                 continue
 
             # Get current values (current completed candle)
@@ -128,99 +156,226 @@ class IchimokuStrategy(BaseStrategy):
             current_kijun = data.iloc[i]['kijun_sen']
             current_span_a = data.iloc[i]['senkou_span_a']
             current_span_b = data.iloc[i]['senkou_span_b']
+            current_chikou = data.iloc[i - self.kijun_period]['chikou_span']  # Chikou is plotted 26 periods back
 
             # Get previous values
             prev_tenkan = data.iloc[i - 1]['tenkan_sen']
             prev_kijun = data.iloc[i - 1]['kijun_sen']
+            prev_chikou = data.iloc[i - self.kijun_period - 1]['chikou_span']
 
             # Calculate cloud top and bottom at current position
             cloud_top = max(current_span_a, current_span_b)
             cloud_bottom = min(current_span_a, current_span_b)
 
             # Determine if Chikou Span is above/below price 26 periods ago
-            # Note: We need to look at current price vs. price that was 26 periods before current
+            # Note: To properly check this, we need to look at current price vs. price that was 26 periods before current
             price_26_periods_ago = data.iloc[i - self.kijun_period]['close']
             chikou_above_price = current_close > price_26_periods_ago
 
             # Determine if we have a TK cross
-            # Tenkan crosses above Kijun
-            tk_bullish_cross = current_tenkan > current_kijun and prev_tenkan <= prev_kijun
+            # Tenkan crosses above Kijun (bullish cross)
+            tk_bullish_cross = prev_tenkan <= prev_kijun and current_tenkan > current_kijun
 
-            # Tenkan crosses below Kijun
-            tk_bearish_cross = current_tenkan < current_kijun and prev_tenkan >= prev_kijun
+            # Tenkan crosses below Kijun (bearish cross)
+            tk_bearish_cross = prev_tenkan >= prev_kijun and current_tenkan < current_kijun
 
-            # Bullish Signal Conditions:
-            # 1. TK Cross bullish (Tenkan crosses above Kijun)
-            # 2. Price is above the Cloud
-            # 3. Cloud ahead is bullish (Senkou A > Senkou B)
+            # Check if Tenkan is already above/below Kijun (continuing trend)
+            tk_bullish_alignment = current_tenkan > current_kijun
+            tk_bearish_alignment = current_tenkan < current_kijun
+
+            # Check cloud direction (is future cloud bullish/bearish)
+            future_cloud_bullish = current_span_a > current_span_b
+
+            # Check if cloud is very thin (potential ranging market)
+            cloud_thickness = abs(current_span_a - current_span_b) / ((current_span_a + current_span_b) / 2)
+            cloud_is_thin = cloud_thickness < 0.01  # Less than 1% difference between spans
+
+            # ----------------------------------------------------------------------
+            # TREND-FOLLOWING SIGNALS
+            # ----------------------------------------------------------------------
+
+            # Bullish Trend Signal Conditions:
+            # 1. Price is above the Cloud
+            # 2. Cloud ahead is bullish (Senkou A > Senkou B)
+            # 3. Tenkan crosses above Kijun OR is already above (bullish alignment)
             # 4. Chikou Span is above price from 26 periods ago
-            if (tk_bullish_cross and
-                    current_close > cloud_top and
-                    data.iloc[i]['cloud_bullish'] and
-                    chikou_above_price):
+            if (current_close > cloud_top and
+                    future_cloud_bullish and
+                    (tk_bullish_cross or tk_bullish_alignment) and
+                    chikou_above_price and
+                    not cloud_is_thin):  # Skip if cloud is too thin (ranging market)
 
-                # Find a good stop loss level (use Kijun-sen or cloud top)
-                # Ichimoku suggests Kijun-sen as a logical support in an uptrend
-                stop_loss = current_kijun
+                # Find a good stop loss level based on Ichimoku
+                # For bullish trend trades, stop loss should be below the Kijun-sen or cloud bottom
+                stop_loss = min(current_kijun, cloud_bottom)
 
-                # If Kijun is too far, use a tighter stop based on ATR
-                kijun_distance = current_close - current_kijun
-                if kijun_distance > data.iloc[i]['atr'] * 3:
+                # If Kijun/cloud is too far for a reasonable stop, use ATR
+                risk_distance = current_close - stop_loss
+                if risk_distance > data.iloc[i]['atr'] * 3:
                     stop_loss = current_close - data.iloc[i]['atr'] * 2
 
-                # Calculate take profit levels (1.5 and 3 times the risk)
+                # Calculate take profit levels (1.5:1 and 3:1 reward-to-risk) as per the plan
                 risk = current_close - stop_loss
-                take_profit_1 = current_close + (risk * 1.5)
-                take_profit_2 = current_close + (risk * 3)
+                take_profit_1 = current_close + (risk * 1.5)  # 1.5:1 reward-to-risk
+                take_profit_2 = current_close + (risk * 3)  # 3:1 reward-to-risk
 
-                # Calculate signal strength (1.0 = very strong)
-                # Based on cloud thickness, TK cross decisiveness, and Chikou span position
-                cloud_thickness = (cloud_top - cloud_bottom) / cloud_bottom
-                tk_decisiveness = (current_tenkan - current_kijun) / current_kijun
-                chikou_strength = (current_close - price_26_periods_ago) / price_26_periods_ago
+                # Store both take profit levels
+                data.loc[data.index[i], 'take_profit_1'] = take_profit_1
+                data.loc[data.index[i], 'take_profit_2'] = take_profit_2
 
-                strength = min(1.0, (0.4 * cloud_thickness + 0.3 * abs(tk_decisiveness) + 0.3 * abs(chikou_strength)))
+                # Calculate signal strength based on multiple factors
+                cloud_thickness_factor = min(1.0, cloud_thickness * 5)  # Thicker cloud = stronger trend
+                tk_decisiveness = min(1.0, abs((current_tenkan - current_kijun) / current_kijun) * 10)
+                chikou_strength = min(1.0, abs((current_close - price_26_periods_ago) / price_26_periods_ago) * 10)
 
+                strength = min(1.0, (0.4 * cloud_thickness_factor + 0.3 * tk_decisiveness + 0.3 * chikou_strength))
+
+                # Generate TREND buy signal
                 data.loc[data.index[i], 'signal'] = 1  # Buy signal
+                data.loc[data.index[i], 'signal_type'] = "TREND"
                 data.loc[data.index[i], 'signal_strength'] = strength
                 data.loc[data.index[i], 'stop_loss'] = stop_loss
-                data.loc[data.index[i], 'take_profit'] = take_profit_1  # Store primary target
 
-            # Bearish Signal Conditions:
-            # 1. TK Cross bearish (Tenkan crosses below Kijun)
-            # 2. Price is below the Cloud
-            # 3. Cloud ahead is bearish (Senkou A < Senkou B)
+            # Bearish Trend Signal Conditions:
+            # 1. Price is below the Cloud
+            # 2. Cloud ahead is bearish (Senkou A < Senkou B)
+            # 3. Tenkan crosses below Kijun OR is already below (bearish alignment)
             # 4. Chikou Span is below price from 26 periods ago
-            elif (tk_bearish_cross and
-                  current_close < cloud_bottom and
-                  not data.iloc[i]['cloud_bullish'] and
-                  not chikou_above_price):
+            elif (current_close < cloud_bottom and
+                  not future_cloud_bullish and
+                  (tk_bearish_cross or tk_bearish_alignment) and
+                  not chikou_above_price and
+                  not cloud_is_thin):  # Skip if cloud is too thin (ranging market)
 
-                # Find a good stop loss level (use Kijun-sen or cloud bottom)
-                # Ichimoku suggests Kijun-sen as a logical resistance in a downtrend
-                stop_loss = current_kijun
+                # Find a good stop loss level based on Ichimoku
+                # For bearish trend trades, stop loss should be above the Kijun-sen or cloud top
+                stop_loss = max(current_kijun, cloud_top)
 
-                # If Kijun is too far, use a tighter stop based on ATR
-                kijun_distance = current_kijun - current_close
-                if kijun_distance > data.iloc[i]['atr'] * 3:
+                # If Kijun/cloud is too far for a reasonable stop, use ATR
+                risk_distance = stop_loss - current_close
+                if risk_distance > data.iloc[i]['atr'] * 3:
                     stop_loss = current_close + data.iloc[i]['atr'] * 2
 
-                # Calculate take profit levels (1.5 and 3 times the risk)
+                # Calculate take profit levels (1.5:1 and 3:1 reward-to-risk) as per the plan
                 risk = stop_loss - current_close
-                take_profit_1 = current_close - (risk * 1.5)
-                take_profit_2 = current_close - (risk * 3)
+                take_profit_1 = current_close - (risk * 1.5)  # 1.5:1 reward-to-risk
+                take_profit_2 = current_close - (risk * 3)  # 3:1 reward-to-risk
 
-                # Calculate signal strength (1.0 = very strong)
-                cloud_thickness = (cloud_top - cloud_bottom) / cloud_bottom
-                tk_decisiveness = (current_kijun - current_tenkan) / current_kijun
-                chikou_strength = (price_26_periods_ago - current_close) / price_26_periods_ago
+                # Store both take profit levels
+                data.loc[data.index[i], 'take_profit_1'] = take_profit_1
+                data.loc[data.index[i], 'take_profit_2'] = take_profit_2
 
-                strength = min(1.0, (0.4 * cloud_thickness + 0.3 * abs(tk_decisiveness) + 0.3 * abs(chikou_strength)))
+                # Calculate signal strength based on multiple factors
+                cloud_thickness_factor = min(1.0, cloud_thickness * 5)  # Thicker cloud = stronger trend
+                tk_decisiveness = min(1.0, abs((current_kijun - current_tenkan) / current_kijun) * 10)
+                chikou_strength = min(1.0, abs((price_26_periods_ago - current_close) / price_26_periods_ago) * 10)
 
+                strength = min(1.0, (0.4 * cloud_thickness_factor + 0.3 * tk_decisiveness + 0.3 * chikou_strength))
+
+                # Generate TREND sell signal
                 data.loc[data.index[i], 'signal'] = -1  # Sell signal
+                data.loc[data.index[i], 'signal_type'] = "TREND"
                 data.loc[data.index[i], 'signal_strength'] = strength
                 data.loc[data.index[i], 'stop_loss'] = stop_loss
-                data.loc[data.index[i], 'take_profit'] = take_profit_1  # Store primary target
+
+            # ----------------------------------------------------------------------
+            # REVERSAL SIGNALS
+            # ----------------------------------------------------------------------
+
+            # Bullish Reversal Signal Conditions:
+            # 1. Prior trend was bearish (price below cloud)
+            # 2. Bullish TK cross occurs while price is still below/inside cloud
+            # 3. Chikou Span is rising and crossing above past price
+            elif (current_close <= cloud_top and  # Price below or inside cloud
+                  tk_bullish_cross and  # Tenkan crosses above Kijun
+                  current_chikou > prev_chikou and  # Chikou is rising
+                  (current_chikou > price_26_periods_ago or  # Chikou above price 26 bars ago
+                   abs(current_chikou - price_26_periods_ago) < data.iloc[i]['atr'])):  # Or very close to it
+
+                # For reversal trades, use a tighter stop loss since they're higher risk
+                stop_loss = current_close - data.iloc[i]['atr'] * 1.5
+
+                # Calculate take profit at the cloud top - this is a logical target for a reversal
+                take_profit_1 = cloud_top
+
+                # If cloud top is too close, extend target to 1.5x risk
+                risk = current_close - stop_loss
+                if (take_profit_1 - current_close) < risk * 1.5:
+                    take_profit_1 = current_close + (risk * 1.5)
+
+                # Second take profit at 2:1 reward-to-risk for reversals
+                take_profit_2 = current_close + (risk * 2)
+
+                # Store both take profit levels
+                data.loc[data.index[i], 'take_profit_1'] = take_profit_1
+                data.loc[data.index[i], 'take_profit_2'] = take_profit_2
+
+                # Reversal trades have lower strength initially
+                strength = min(0.7, abs((current_tenkan - current_kijun) / current_kijun) * 5)
+
+                # Generate REVERSAL buy signal
+                data.loc[data.index[i], 'signal'] = 1  # Buy signal
+                data.loc[data.index[i], 'signal_type'] = "REVERSAL"
+                data.loc[data.index[i], 'signal_strength'] = strength
+                data.loc[data.index[i], 'stop_loss'] = stop_loss
+
+            # Bearish Reversal Signal Conditions:
+            # 1. Prior trend was bullish (price above cloud)
+            # 2. Bearish TK cross occurs while price is still above/inside cloud
+            # 3. Chikou Span is falling and crossing below past price
+            elif (current_close >= cloud_bottom and  # Price above or inside cloud
+                  tk_bearish_cross and  # Tenkan crosses below Kijun
+                  current_chikou < prev_chikou and  # Chikou is falling
+                  (current_chikou < price_26_periods_ago or  # Chikou below price 26 bars ago
+                   abs(current_chikou - price_26_periods_ago) < data.iloc[i]['atr'])):  # Or very close to it
+
+                # For reversal trades, use a tighter stop loss since they're higher risk
+                stop_loss = current_close + data.iloc[i]['atr'] * 1.5
+
+                # Calculate take profit at the cloud bottom - logical target for a reversal
+                take_profit_1 = cloud_bottom
+
+                # If cloud bottom is too close, extend target to 1.5x risk
+                risk = stop_loss - current_close
+                if (current_close - take_profit_1) < risk * 1.5:
+                    take_profit_1 = current_close - (risk * 1.5)
+
+                # Second take profit at 2:1 reward-to-risk for reversals
+                take_profit_2 = current_close - (risk * 2)
+
+                # Store both take profit levels
+                data.loc[data.index[i], 'take_profit_1'] = take_profit_1
+                data.loc[data.index[i], 'take_profit_2'] = take_profit_2
+
+                # Reversal trades have lower strength initially
+                strength = min(0.7, abs((current_kijun - current_tenkan) / current_kijun) * 5)
+
+                # Generate REVERSAL sell signal
+                data.loc[data.index[i], 'signal'] = -1  # Sell signal
+                data.loc[data.index[i], 'signal_type'] = "REVERSAL"
+                data.loc[data.index[i], 'signal_strength'] = strength
+                data.loc[data.index[i], 'stop_loss'] = stop_loss
+
+            # ----------------------------------------------------------------------
+            # EXIT SIGNALS
+            # ----------------------------------------------------------------------
+
+            # Check for potential exit signals for current positions
+            # These would be implemented in the order_manager or trailing_stop_manager
+            # For example:
+
+            # Exit longs on:
+            # - Bearish TK Cross
+            # - Price moving back below Kijun
+            # - Price entering the cloud from above
+
+            # Exit shorts on:
+            # - Bullish TK Cross
+            # - Price moving back above Kijun
+            # - Price entering the cloud from below
+
+            # Note: Actual position management is handled separately, but we're
+            # identifying potential exit points for the trailing stop manager to use
 
         return data
 
@@ -248,9 +403,12 @@ class IchimokuStrategy(BaseStrategy):
 
         # Check for trading signal on the last candle
         if last_candle['signal'] == 1:  # Buy signal
+            signal_type = last_candle['signal_type']
+
             # Create BUY signal
             entry_price = last_candle['close']
             stop_loss = last_candle['stop_loss']
+            take_profit = last_candle['take_profit']
 
             # Ensure stop loss is valid
             if stop_loss >= entry_price:
@@ -260,8 +418,8 @@ class IchimokuStrategy(BaseStrategy):
             risk = entry_price - stop_loss
 
             # Calculate multiple take profit levels
-            take_profit_1 = entry_price + (risk * 1.5)  # 1.5:1 reward-to-risk
-            take_profit_2 = entry_price + (risk * 3)  # 3:1 reward-to-risk
+            take_profit_1 = last_candle['take_profit']  # Use the calculated take profit
+            take_profit_2 = entry_price + (risk * 3) if signal_type == "TREND" else entry_price + (risk * 2)
 
             signal = self.create_signal(
                 signal_type="BUY",
@@ -276,21 +434,27 @@ class IchimokuStrategy(BaseStrategy):
                     'senkou_span_a': last_candle['senkou_span_a'],
                     'senkou_span_b': last_candle['senkou_span_b'],
                     'cloud_bullish': bool(last_candle['cloud_bullish']),
-                    'reason': 'Bullish TK cross above cloud with Chikou confirmation'
+                    'strategy_signal_type': signal_type,
+                    'reason': f'Bullish {signal_type} signal: TK alignment with Chikou confirmation'
                 }
             )
             signals.append(signal)
 
             DBLogger.log_event("INFO",
-                f"Generated BUY signal for {self.symbol} at {entry_price}. "
-                f"Tenkan: {last_candle['tenkan_sen']:.2f}, Kijun: {last_candle['kijun_sen']:.2f}, "
-                f"Cloud: {'Bullish' if last_candle['cloud_bullish'] else 'Bearish'}"
-            )
+                               f"Generated BUY ({signal_type}) signal for {self.symbol} at {entry_price}. "
+                               f"Tenkan: {last_candle['tenkan_sen']:.2f}, Kijun: {last_candle['kijun_sen']:.2f}, "
+                               f"Cloud: {'Bullish' if last_candle['cloud_bullish'] else 'Bearish'}, "
+                               f"Stop: {stop_loss:.2f}, Target: {take_profit_1:.2f}",
+                               "IchimokuStrategy"
+                               )
 
         elif last_candle['signal'] == -1:  # Sell signal
+            signal_type = last_candle['signal_type']
+
             # Create SELL signal
             entry_price = last_candle['close']
             stop_loss = last_candle['stop_loss']
+            take_profit = last_candle['take_profit']
 
             # Ensure stop loss is valid
             if stop_loss <= entry_price:
@@ -299,9 +463,11 @@ class IchimokuStrategy(BaseStrategy):
             # Calculate risk in dollars
             risk = stop_loss - entry_price
 
-            # Calculate multiple take profit levels
-            take_profit_1 = entry_price - (risk * 1.5)  # 1.5:1 reward-to-risk
-            take_profit_2 = entry_price - (risk * 3)  # 3:1 reward-to-risk
+            # Use the take profit calculated during signal identification
+            take_profit_1 = last_candle['take_profit']
+
+            # Calculate the second take profit target based on signal type
+            take_profit_2 = entry_price - (risk * 3) if signal_type == "TREND" else entry_price - (risk * 2)
 
             signal = self.create_signal(
                 signal_type="SELL",
@@ -316,15 +482,18 @@ class IchimokuStrategy(BaseStrategy):
                     'senkou_span_a': last_candle['senkou_span_a'],
                     'senkou_span_b': last_candle['senkou_span_b'],
                     'cloud_bullish': bool(last_candle['cloud_bullish']),
-                    'reason': 'Bearish TK cross below cloud with Chikou confirmation'
+                    'strategy_signal_type': signal_type,
+                    'reason': f'Bearish {signal_type} signal: TK alignment with Chikou confirmation'
                 }
             )
             signals.append(signal)
 
             DBLogger.log_event("INFO",
-                f"Generated SELL signal for {self.symbol} at {entry_price}. "
-                f"Tenkan: {last_candle['tenkan_sen']:.2f}, Kijun: {last_candle['kijun_sen']:.2f}, "
-                f"Cloud: {'Bullish' if last_candle['cloud_bullish'] else 'Bearish'}"
-            )
+                               f"Generated SELL ({signal_type}) signal for {self.symbol} at {entry_price}. "
+                               f"Tenkan: {last_candle['tenkan_sen']:.2f}, Kijun: {last_candle['kijun_sen']:.2f}, "
+                               f"Cloud: {'Bullish' if last_candle['cloud_bullish'] else 'Bearish'}, "
+                               f"Stop: {stop_loss:.2f}, Target: {take_profit_1:.2f}",
+                               "IchimokuStrategy"
+                               )
 
         return signals
