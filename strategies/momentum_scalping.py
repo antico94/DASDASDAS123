@@ -337,215 +337,477 @@ class MomentumScalpingStrategy(BaseStrategy):
 
         return data
 
-    # strategies/momentum_scalping.py - Key fixes
     def _identify_signals(self, data):
-        """Identify momentum scalping signals according to the plan specifications."""
-        # Initialize signal columns
-        data['signal'] = 0  # 0: No signal, 1: Buy, -1: Sell
-        data['signal_strength'] = 0.0
-        data['stop_loss'] = np.nan
-        data['take_profit'] = np.nan
-        data['momentum_state'] = 0  # 0: Neutral, 1: Bullish, -1: Bearish
-        data['momentum_fading'] = 0  # 0: Not fading, 1: Bullish fading, -1: Bearish fading
+        """Identify momentum scalping signals according to the plan specifications.
 
-        for i in range(5, len(data)):
-            # Skip if not enough prior data
-            if i < 5:
-                continue
+        This version includes extensive validation, error handling, and logging
+        to ensure that signals are reliably identified with no silent failures.
 
-            # Get current values
-            current_close = data.iloc[i]['close']
-            current_high = data.iloc[i]['high']
-            current_low = data.iloc[i]['low']
+        Args:
+            data (pandas.DataFrame): OHLC data with required indicators
 
-            # Get indicator values - check they exist first
-            required_columns = ['rsi', 'macd', 'macd_signal', 'macd_histogram',
-                                'stoch_k', 'stoch_d', 'momentum', 'volume_ratio']
-            if not all(col in data.columns for col in required_columns):
-                continue
+        Returns:
+            pandas.DataFrame: Data with signal columns added
 
-            current_rsi = data.iloc[i]['rsi']
-            current_macd = data.iloc[i]['macd']
-            current_macd_signal = data.iloc[i]['macd_signal']
-            current_macd_hist = data.iloc[i]['macd_histogram']
-            current_stoch_k = data.iloc[i]['stoch_k']
-            current_stoch_d = data.iloc[i]['stoch_d']
-            current_momentum = data.iloc[i]['momentum']
-            current_volume_ratio = data.iloc[i]['volume_ratio']
+        Raises:
+            ValueError: If required data is missing or conditions can't be evaluated
+        """
+        # Validate input data
+        if data is None:
+            error_msg = "Input data cannot be None"
+            DBLogger.log_error("MomentumScalpingStrategy", error_msg)
+            raise ValueError(error_msg)
 
-            # Previous values for comparison
-            prev_close = data.iloc[i - 1]['close']
-            prev_high = data.iloc[i - 1]['high']
-            prev_low = data.iloc[i - 1]['low']
-            prev_stoch_k = data.iloc[i - 1]['stoch_k']
-            prev_stoch_d = data.iloc[i - 1]['stoch_d']
-            prev_macd_hist = data.iloc[i - 1]['macd_histogram']
+        if not isinstance(data, pd.DataFrame):
+            error_msg = f"Input data must be a pandas DataFrame, got {type(data)}"
+            DBLogger.log_error("MomentumScalpingStrategy", error_msg)
+            raise ValueError(error_msg)
 
-            # Check session time if enabled
-            good_session = True
-            if self.consider_session and 'good_session' in data.columns:
-                good_session = data.iloc[i]['good_session'] == 1
+        if len(data) < 5:
+            error_msg = f"Input data must have at least 5 rows, got {len(data)}"
+            DBLogger.log_error("MomentumScalpingStrategy", error_msg)
+            raise ValueError(error_msg)
 
-            # PRICE ACTION TRIGGER: Check for breakout or strong momentum candle
-            # Per plan: "a breakout is defined as price moving beyond a key level and holding beyond it"
-            # Look back for recent high/low levels
-            lookback = 20  # Look back 20 bars for significant levels
-            lookback_start = max(0, i - lookback)
-            recent_high = data.iloc[lookback_start:i]['high'].max()
-            recent_low = data.iloc[lookback_start:i]['low'].min()
+        # Verify required indicator columns exist
+        required_columns = [
+            'open', 'high', 'low', 'close', 'volume',
+            'rsi', 'macd', 'macd_signal', 'macd_histogram',
+            'stoch_k', 'stoch_d', 'momentum', 'volume_ratio'
+        ]
 
-            # Calculate average candle size for comparison
-            avg_candle_size = (data.iloc[lookback_start:i]['high'] - data.iloc[lookback_start:i]['low']).mean()
-            current_candle_size = current_high - current_low
+        missing_columns = [col for col in required_columns if col not in data.columns]
+        if missing_columns:
+            error_msg = f"Missing required columns: {missing_columns}"
+            DBLogger.log_error("MomentumScalpingStrategy", error_msg)
+            raise ValueError(error_msg)
 
-            # Check if current candle is significantly larger (breakout condition)
-            large_candle = current_candle_size > (avg_candle_size * 1.5)
+        # Make a copy to avoid modifying the original
+        try:
+            processed_data = data.copy()
+        except Exception as e:
+            error_msg = f"Failed to create data copy: {str(e)}"
+            DBLogger.log_error("MomentumScalpingStrategy", error_msg, exception=e)
+            raise ValueError(error_msg) from e
 
-            # Check for breakout above recent high or below recent low
-            breakout_up = current_close > recent_high and current_close > prev_high
-            breakout_down = current_close < recent_low and current_close < prev_low
+        # Initialize signal columns or reset them if they exist
+        try:
+            processed_data['signal'] = 0  # 0: No signal, 1: Buy, -1: Sell
+            processed_data['signal_strength'] = 0.0
+            processed_data['stop_loss'] = np.nan
+            processed_data['take_profit'] = np.nan
+            processed_data['momentum_state'] = 0  # 0: Neutral, 1: Bullish, -1: Bearish
+            processed_data['momentum_fading'] = 0  # 0: Not fading, 1: Bullish fading, -1: Bearish fading
+        except Exception as e:
+            error_msg = f"Failed to initialize signal columns: {str(e)}"
+            DBLogger.log_error("MomentumScalpingStrategy", error_msg, exception=e)
+            raise ValueError(error_msg) from e
 
-            # MOMENTUM INDICATOR CONFIRMATION
-            # Per plan: "RSI > 60 and rising for bullish momentum"
-            bullish_rsi = current_rsi > self.rsi_threshold_high
-            bearish_rsi = current_rsi < self.rsi_threshold_low
+        DBLogger.log_event("DEBUG", f"Processing {len(processed_data)} bars for signal identification",
+                           "MomentumScalpingStrategy")
 
-            # MACD confirmation
-            # Per plan: "MACD histogram should be > 0 and preferably increasing"
-            bullish_macd = current_macd_hist > 0 and current_macd > current_macd_signal
-            bearish_macd = current_macd_hist < 0 and current_macd < current_macd_signal
+        # Process each bar starting from index 5 (to have enough lookback)
+        bar_count = 0
+        signal_count = 0
 
-            # Stochastic confirmation
-            # Per plan: "Stochastic %K crossing above %D, or already in the 80+ zone"
-            stoch_bullish_cross = (current_stoch_k > current_stoch_d) and (prev_stoch_k <= prev_stoch_d)
-            stoch_bearish_cross = (current_stoch_k < current_stoch_d) and (prev_stoch_k >= prev_stoch_d)
-            stoch_bullish = current_stoch_k > current_stoch_d or current_stoch_k > 80
-            stoch_bearish = current_stoch_k < current_stoch_d or current_stoch_k < 20
+        for i in range(5, len(processed_data)):
+            try:
+                bar_count += 1
 
-            # Momentum/ROC
-            # Per plan: "Momentum > 100.20 (+0.2%) for long"
-            bullish_momentum = current_momentum > 100.2
-            bearish_momentum = current_momentum < 99.8
+                # Get current values
+                current_close = processed_data.iloc[i]['close']
+                current_high = processed_data.iloc[i]['high']
+                current_low = processed_data.iloc[i]['low']
 
-            # VOLUME SURGE CONFIRMATION
-            # Per plan: "Volume should exceed recent averages (>150% of 20-bar average)"
-            high_volume = current_volume_ratio >= self.volume_threshold  # Already calculated in preparation
+                # Previous values for comparison
+                prev_close = processed_data.iloc[i - 1]['close']
+                prev_high = processed_data.iloc[i - 1]['high']
+                prev_low = processed_data.iloc[i - 1]['low']
 
-            # COMBINED ENTRY CONDITIONS
-            # For a long entry: RSI>60, MACD>0, Stochastic bullish, Volume high, Price breakout up
-            bullish_conditions = (
-                    bullish_rsi and
-                    bullish_macd and
-                    (stoch_bullish or stoch_bullish_cross) and  # Using stochastic crossover signal
-                    bullish_momentum and
-                    high_volume and
-                    (breakout_up or large_candle) and
-                    good_session
-            )
+                # Get indicator values with explicit error checking
+                try:
+                    current_rsi = processed_data.iloc[i]['rsi']
+                    current_macd = processed_data.iloc[i]['macd']
+                    current_macd_signal = processed_data.iloc[i]['macd_signal']
+                    current_macd_hist = processed_data.iloc[i]['macd_histogram']
+                    # FIX: Get previous MACD histogram value for comparison
+                    prev_macd_hist = processed_data.iloc[i - 1]['macd_histogram']
+                    current_stoch_k = processed_data.iloc[i]['stoch_k']
+                    current_stoch_d = processed_data.iloc[i]['stoch_d']
+                    prev_stoch_k = processed_data.iloc[i - 1]['stoch_k']
+                    prev_stoch_d = processed_data.iloc[i - 1]['stoch_d']
+                    current_momentum = processed_data.iloc[i]['momentum']
+                    current_volume_ratio = processed_data.iloc[i]['volume_ratio']
+                except KeyError as e:
+                    error_msg = f"Failed to access indicator column: {str(e)}"
+                    DBLogger.log_error("MomentumScalpingStrategy", error_msg, exception=e)
+                    continue  # Skip this bar but continue processing others
 
-            # For a short entry: RSI<40, MACD<0, Stochastic bearish, Volume high, Price breakout down
-            bearish_conditions = (
-                    bearish_rsi and
-                    bearish_macd and
-                    (stoch_bearish or stoch_bearish_cross) and  # Using stochastic crossover signal
-                    bearish_momentum and
-                    high_volume and
-                    (breakout_down or large_candle) and
-                    good_session
-            )
+                # Check for invalid indicator values (common in early bars)
+                if (pd.isna(current_rsi) or pd.isna(current_macd_hist) or pd.isna(prev_macd_hist) or
+                        pd.isna(current_stoch_k) or pd.isna(current_momentum)):
+                    DBLogger.log_event("DEBUG", f"Skipping bar {i} due to NaN indicator values",
+                                       "MomentumScalpingStrategy")
+                    continue
 
-            # Check for BUY signal
-            if bullish_conditions:
-                # Calculate signal strength based on multiple factors
-                strength_factors = [
-                    (current_rsi - 50) / 25,  # Scale 0-1 based on RSI strength
-                    current_macd_hist / data.iloc[i]['atr'],  # Scale relative to volatility
-                    (current_stoch_k - 50) / 50,  # Scale based on stochastic
-                    (current_volume_ratio - 1) / self.volume_threshold  # Volume strength
-                ]
+                # Check if session consideration is enabled
+                good_session = True  # Default to good session
+                if self.consider_session:
+                    if 'good_session' in processed_data.columns:
+                        good_session = bool(processed_data.iloc[i]['good_session'] == 1)
+                    else:
+                        # If column is missing but feature is enabled, create it
+                        # from index timestamp if available
+                        try:
+                            if hasattr(processed_data.index, 'hour') or hasattr(processed_data.index[i], 'hour'):
+                                hour = processed_data.index[i].hour if hasattr(processed_data.index[i], 'hour') else 0
+                                good_session = 13 <= hour < 17  # London/NY overlap
 
-                # Add extra strength for stochastic crossover, especially from oversold
-                if stoch_bullish_cross:
-                    crossover_from_oversold = prev_stoch_k < 20
-                    strength_factors.append(0.2 if crossover_from_oversold else 0.1)
+                                # If we're creating this on the fly, add it to the dataframe
+                                if 'good_session' not in processed_data.columns:
+                                    processed_data['good_session'] = 0
+                                    # Set session quality for all bars based on hour
+                                    for idx, timestamp in enumerate(processed_data.index):
+                                        if hasattr(timestamp, 'hour'):
+                                            hour_val = timestamp.hour
+                                            processed_data.iloc[idx, processed_data.columns.get_loc(
+                                                'good_session')] = 1 if 13 <= hour_val < 17 else 0
+                        except Exception as e:
+                            DBLogger.log_event("WARNING", f"Failed to determine session quality: {str(e)}",
+                                               "MomentumScalpingStrategy")
+                            # Continue with default good_session=True
 
-                # Average the factors and cap at 1.0
-                signal_strength = min(1.0, sum([max(0, s) for s in strength_factors]) / len(strength_factors))
+                # PRICE ACTION TRIGGER: Check for breakout or strong momentum candle
+                try:
+                    # Look back for recent high/low levels
+                    lookback = 20  # Look back 20 bars for significant levels
+                    lookback_start = max(0, i - lookback)
+                    recent_high = processed_data.iloc[lookback_start:i]['high'].max()  # Exclude current bar
+                    recent_low = processed_data.iloc[lookback_start:i]['low'].min()  # Exclude current bar
 
-                # Calculate stop loss (use ATR for this example)
-                atr = data.iloc[i]['atr']
-                stop_loss = current_close - (atr * 1.5)
+                    # Calculate average candle size for comparison
+                    avg_candle_size = (
+                            processed_data.iloc[lookback_start:i]['high'] - processed_data.iloc[lookback_start:i][
+                        'low']).mean()
+                    current_candle_size = current_high - current_low
 
-                # Calculate take profit (1:1 risk-reward for now)
-                risk = current_close - stop_loss
-                take_profit = current_close + risk
+                    # Check if current candle is significantly larger (breakout condition)
+                    large_candle = current_candle_size > (avg_candle_size * 1.5)
 
-                # Set signal values
-                data.iloc[i, data.columns.get_loc('signal')] = 1  # Buy signal
-                data.iloc[i, data.columns.get_loc('signal_strength')] = signal_strength
-                data.iloc[i, data.columns.get_loc('stop_loss')] = stop_loss
-                data.iloc[i, data.columns.get_loc('take_profit')] = take_profit
-                data.iloc[i, data.columns.get_loc('momentum_state')] = 1  # Bullish state
+                    # Check for breakout above recent high or below recent low
+                    breakout_up = current_close > recent_high
+                    breakout_down = current_close < recent_low
 
-            # Check for SELL signal
-            elif bearish_conditions:
-                # Calculate signal strength based on multiple factors
-                strength_factors = [
-                    (50 - current_rsi) / 25,  # Scale 0-1 based on RSI strength
-                    -current_macd_hist / data.iloc[i]['atr'],  # Scale relative to volatility
-                    (50 - current_stoch_k) / 50,  # Scale based on stochastic
-                    (current_volume_ratio - 1) / self.volume_threshold  # Volume strength
-                ]
+                    # Log price action for debugging
+                    if large_candle or breakout_up or breakout_down:
+                        action_type = []
+                        if large_candle:
+                            action_type.append("large candle")
+                        if breakout_up:
+                            action_type.append("upward breakout")
+                        if breakout_down:
+                            action_type.append("downward breakout")
 
-                # Add extra strength for stochastic crossover, especially from overbought
-                if stoch_bearish_cross:
-                    crossover_from_overbought = prev_stoch_k > 80
-                    strength_factors.append(0.2 if crossover_from_overbought else 0.1)
+                        DBLogger.log_event("DEBUG",
+                                           f"Price action detected at bar {i}: {', '.join(action_type)}. "
+                                           f"Close: {current_close}, Recent high: {recent_high}, Recent low: {recent_low}, "
+                                           f"Candle size: {current_candle_size:.2f}, Avg size: {avg_candle_size:.2f}",
+                                           "MomentumScalpingStrategy")
+                except Exception as e:
+                    DBLogger.log_error("MomentumScalpingStrategy",
+                                       f"Error calculating price action at bar {i}: {str(e)}",
+                                       exception=e)
+                    continue  # Skip this bar if price action can't be determined
 
-                # Average the factors and cap at 1.0
-                signal_strength = min(1.0, sum([max(0, s) for s in strength_factors]) / len(strength_factors))
+                # MOMENTUM INDICATOR CONFIRMATION
+                # Define conditions with explicit error handling
+                try:
+                    # RSI condition
+                    bullish_rsi = current_rsi > self.rsi_threshold_high
+                    bearish_rsi = current_rsi < self.rsi_threshold_low
 
-                # Calculate stop loss
-                atr = data.iloc[i]['atr']
-                stop_loss = current_close + (atr * 1.5)
+                    # MACD confirmation
+                    bullish_macd = current_macd_hist > 0 and current_macd > current_macd_signal
+                    bearish_macd = current_macd_hist < 0 and current_macd < current_macd_signal
 
-                # Calculate take profit (1:1 risk-reward for now)
-                risk = stop_loss - current_close
-                take_profit = current_close - risk
+                    # Stochastic confirmation
+                    stoch_bullish_cross = (current_stoch_k > current_stoch_d) and (prev_stoch_k <= prev_stoch_d)
+                    stoch_bearish_cross = (current_stoch_k < current_stoch_d) and (prev_stoch_k >= prev_stoch_d)
+                    stoch_bullish = current_stoch_k > current_stoch_d or current_stoch_k > 80
+                    stoch_bearish = current_stoch_k < current_stoch_d or current_stoch_k < 20
 
-                # Set signal values
-                data.iloc[i, data.columns.get_loc('signal')] = -1  # Sell signal
-                data.iloc[i, data.columns.get_loc('signal_strength')] = signal_strength
-                data.iloc[i, data.columns.get_loc('stop_loss')] = stop_loss
-                data.iloc[i, data.columns.get_loc('take_profit')] = take_profit
-                data.iloc[i, data.columns.get_loc('momentum_state')] = -1  # Bearish state
+                    # Momentum/ROC
+                    bullish_momentum = current_momentum > 100.2
+                    bearish_momentum = current_momentum < 99.8
 
-            # MOMENTUM FADING DETECTION FOR EXITS
-            # Per plan: "exit when RSI drops back below 50, MACD histogram shrinks, etc."
-            if i > 0 and data.iloc[i - 1]['momentum_state'] == 1:  # Previous bar was bullish
-                # Check if momentum is fading
-                momentum_fading = (
-                        current_rsi < 50 or
-                        current_macd_hist < prev_macd_hist or  # Histogram shrinking
-                        (current_stoch_k < current_stoch_d and prev_stoch_k >= prev_stoch_d)  # Bearish stoch cross
+                    # Volume confirmation
+                    high_volume = current_volume_ratio >= self.volume_threshold
+
+                    # Log indicator conditions for debugging the last few bars
+                    if i >= len(processed_data) - 3:  # Only log last 3 bars for efficiency
+                        DBLogger.log_event("DEBUG",
+                                           f"Bar {i} conditions: RSI={current_rsi:.1f}({bullish_rsi}), "
+                                           f"MACD Hist={current_macd_hist:.4f}({bullish_macd}), "
+                                           f"Stoch K/D={current_stoch_k:.1f}/{current_stoch_d:.1f}({stoch_bullish}), "
+                                           f"Momentum={current_momentum:.2f}({bullish_momentum}), "
+                                           f"Volume ratio={current_volume_ratio:.1f}({high_volume}), "
+                                           f"Session={good_session}, "
+                                           f"Price action: BU={breakout_up}, LC={large_candle}",
+                                           "MomentumScalpingStrategy")
+                except Exception as e:
+                    DBLogger.log_error("MomentumScalpingStrategy",
+                                       f"Error evaluating indicator conditions at bar {i}: {str(e)}",
+                                       exception=e)
+                    continue  # Skip this bar if conditions can't be evaluated
+
+                # COMBINED ENTRY CONDITIONS
+                # For a long entry: RSI>60, MACD>0, Stochastic bullish, Volume high, Price breakout up
+                bullish_conditions = (
+                        bullish_rsi and
+                        bullish_macd and
+                        (stoch_bullish or stoch_bullish_cross) and  # Using stochastic crossover signal
+                        bullish_momentum and
+                        high_volume and
+                        (breakout_up or large_candle) and
+                        good_session
                 )
 
-                if momentum_fading:
-                    data.iloc[i, data.columns.get_loc('momentum_fading')] = 1  # Bullish momentum fading
-
-            elif i > 0 and data.iloc[i - 1]['momentum_state'] == -1:  # Previous bar was bearish
-                # Check if momentum is fading
-                momentum_fading = (
-                        current_rsi > 50 or
-                        current_macd_hist > prev_macd_hist or  # Histogram shrinking (in negative)
-                        (current_stoch_k > current_stoch_d and prev_stoch_k <= prev_stoch_d)  # Bullish stoch cross
+                # For a short entry: RSI<40, MACD<0, Stochastic bearish, Volume high, Price breakout down
+                bearish_conditions = (
+                        bearish_rsi and
+                        bearish_macd and
+                        (stoch_bearish or stoch_bearish_cross) and  # Using stochastic crossover signal
+                        bearish_momentum and
+                        high_volume and
+                        (breakout_down or large_candle) and
+                        good_session
                 )
 
-                if momentum_fading:
-                    data.iloc[i, data.columns.get_loc('momentum_fading')] = -1  # Bearish momentum fading
+                # Debug log bullish conditions for the last few bars
+                if i >= len(processed_data) - 3:  # Only log last 3 bars
+                    DBLogger.log_event("DEBUG",
+                                       f"Bar {i} bullish_conditions={bullish_conditions}, bearish_conditions={bearish_conditions}",
+                                       "MomentumScalpingStrategy")
 
-        return data
+                # Check for BUY signal
+                if bullish_conditions:
+                    signal_count += 1
+                    DBLogger.log_event("INFO",
+                                       f"BUY SIGNAL triggered at bar {i}. "
+                                       f"Close: {current_close}, RSI: {current_rsi:.1f}, "
+                                       f"MACD Hist: {current_macd_hist:.4f}, Momentum: {current_momentum:.2f}",
+                                       "MomentumScalpingStrategy")
 
+                    # Calculate signal strength based on multiple factors
+                    try:
+                        strength_factors = [
+                            (current_rsi - 50) / 25,  # Scale 0-1 based on RSI strength
+                            current_macd_hist / processed_data.iloc[i]['atr'] if 'atr' in processed_data.columns and
+                                                                                 processed_data.iloc[i][
+                                                                                     'atr'] > 0 else 0.5,
+                            # Scale relative to volatility
+                            (current_stoch_k - 50) / 50,  # Scale based on stochastic
+                            (current_volume_ratio - 1) / self.volume_threshold  # Volume strength
+                        ]
+
+                        # Add extra strength for stochastic crossover, especially from oversold
+                        if stoch_bullish_cross:
+                            crossover_from_oversold = prev_stoch_k < 20
+                            strength_factors.append(0.2 if crossover_from_oversold else 0.1)
+
+                        # Cap each factor at 1.0 for robustness
+                        capped_factors = [min(1.0, max(0, factor)) for factor in strength_factors]
+
+                        # Average the factors and cap at 1.0
+                        if capped_factors:
+                            signal_strength = sum(capped_factors) / len(capped_factors)
+                        else:
+                            signal_strength = 0.6  # Default if factors can't be calculated
+
+                        DBLogger.log_event("DEBUG",
+                                           f"Signal strength factors: {capped_factors}, "
+                                           f"Final strength: {signal_strength:.2f}",
+                                           "MomentumScalpingStrategy")
+                    except Exception as e:
+                        DBLogger.log_error("MomentumScalpingStrategy",
+                                           f"Error calculating signal strength: {str(e)}",
+                                           exception=e)
+                        signal_strength = 0.6  # Default if calculation fails
+
+                    # Calculate stop loss using ATR if available
+                    try:
+                        if 'atr' in processed_data.columns and not pd.isna(processed_data.iloc[i]['atr']):
+                            atr = processed_data.iloc[i]['atr']
+                        else:
+                            # Estimate ATR if not available
+                            atr = (current_high - current_low) * 0.5
+
+                        stop_loss = current_close - (atr * 1.5)
+
+                        # Calculate take profit (1:1 risk-reward for now)
+                        risk = current_close - stop_loss
+                        take_profit = current_close + risk
+                    except Exception as e:
+                        DBLogger.log_error("MomentumScalpingStrategy",
+                                           f"Error calculating stop loss/take profit: {str(e)}",
+                                           exception=e)
+                        # Use default values as fallback
+                        stop_loss = current_close * 0.995
+                        take_profit = current_close * 1.005
+
+                    # Set signal values - with explicit error handling
+                    try:
+                        processed_data.iloc[i, processed_data.columns.get_loc('signal')] = 1  # Buy signal
+                        processed_data.iloc[i, processed_data.columns.get_loc('signal_strength')] = signal_strength
+                        processed_data.iloc[i, processed_data.columns.get_loc('stop_loss')] = stop_loss
+                        processed_data.iloc[i, processed_data.columns.get_loc('take_profit')] = take_profit
+                        processed_data.iloc[i, processed_data.columns.get_loc('momentum_state')] = 1  # Bullish state
+                    except Exception as e:
+                        critical_error = f"CRITICAL: Failed to set signal values in DataFrame at index {i}: {str(e)}"
+                        DBLogger.log_error("MomentumScalpingStrategy", critical_error, exception=e)
+                        raise RuntimeError(critical_error) from e
+
+                # Check for SELL signal
+                elif bearish_conditions:
+                    signal_count += 1
+                    DBLogger.log_event("INFO",
+                                       f"SELL SIGNAL triggered at bar {i}. "
+                                       f"Close: {current_close}, RSI: {current_rsi:.1f}, "
+                                       f"MACD Hist: {current_macd_hist:.4f}, Momentum: {current_momentum:.2f}",
+                                       "MomentumScalpingStrategy")
+
+                    # Calculate signal strength based on multiple factors
+                    try:
+                        strength_factors = [
+                            (50 - current_rsi) / 25,  # Scale 0-1 based on RSI strength
+                            -current_macd_hist / processed_data.iloc[i]['atr'] if 'atr' in processed_data.columns and
+                                                                                  processed_data.iloc[i][
+                                                                                      'atr'] > 0 else 0.5,
+                            # Scale relative to volatility
+                            (50 - current_stoch_k) / 50,  # Scale based on stochastic
+                            (current_volume_ratio - 1) / self.volume_threshold  # Volume strength
+                        ]
+
+                        # Add extra strength for stochastic crossover, especially from overbought
+                        if stoch_bearish_cross:
+                            crossover_from_overbought = prev_stoch_k > 80
+                            strength_factors.append(0.2 if crossover_from_overbought else 0.1)
+
+                        # Cap each factor at 1.0 for robustness
+                        capped_factors = [min(1.0, max(0, factor)) for factor in strength_factors]
+
+                        # Average the factors and cap at 1.0
+                        if capped_factors:
+                            signal_strength = sum(capped_factors) / len(capped_factors)
+                        else:
+                            signal_strength = 0.6  # Default if factors can't be calculated
+
+                        DBLogger.log_event("DEBUG",
+                                           f"Signal strength factors: {capped_factors}, "
+                                           f"Final strength: {signal_strength:.2f}",
+                                           "MomentumScalpingStrategy")
+                    except Exception as e:
+                        DBLogger.log_error("MomentumScalpingStrategy",
+                                           f"Error calculating signal strength: {str(e)}",
+                                           exception=e)
+                        signal_strength = 0.6  # Default if calculation fails
+
+                    # Calculate stop loss using ATR if available
+                    try:
+                        if 'atr' in processed_data.columns and not pd.isna(processed_data.iloc[i]['atr']):
+                            atr = processed_data.iloc[i]['atr']
+                        else:
+                            # Estimate ATR if not available
+                            atr = (current_high - current_low) * 0.5
+
+                        stop_loss = current_close + (atr * 1.5)
+
+                        # Calculate take profit (1:1 risk-reward for now)
+                        risk = stop_loss - current_close
+                        take_profit = current_close - risk
+                    except Exception as e:
+                        DBLogger.log_error("MomentumScalpingStrategy",
+                                           f"Error calculating stop loss/take profit: {str(e)}",
+                                           exception=e)
+                        # Use default values as fallback
+                        stop_loss = current_close * 1.005
+                        take_profit = current_close * 0.995
+
+                    # Set signal values - with explicit error handling
+                    try:
+                        processed_data.iloc[i, processed_data.columns.get_loc('signal')] = -1  # Sell signal
+                        processed_data.iloc[i, processed_data.columns.get_loc('signal_strength')] = signal_strength
+                        processed_data.iloc[i, processed_data.columns.get_loc('stop_loss')] = stop_loss
+                        processed_data.iloc[i, processed_data.columns.get_loc('take_profit')] = take_profit
+                        processed_data.iloc[i, processed_data.columns.get_loc('momentum_state')] = -1  # Bearish state
+                    except Exception as e:
+                        critical_error = f"CRITICAL: Failed to set signal values in DataFrame at index {i}: {str(e)}"
+                        DBLogger.log_error("MomentumScalpingStrategy", critical_error, exception=e)
+                        raise RuntimeError(critical_error) from e
+
+                # MOMENTUM FADING DETECTION FOR EXITS
+                # Per plan: "exit when RSI drops back below 50, MACD histogram shrinks, etc."
+                try:
+                    if i > 0 and processed_data.iloc[i - 1]['momentum_state'] == 1:  # Previous bar was bullish
+                        # Check if momentum is fading
+                        momentum_fading = (
+                                current_rsi < 50 or
+                                current_macd_hist < prev_macd_hist or  # Histogram shrinking
+                                (current_stoch_k < current_stoch_d and prev_stoch_k >= prev_stoch_d)
+                        # Bearish stoch cross
+                        )
+
+                        if momentum_fading:
+                            DBLogger.log_event("DEBUG",
+                                               f"Bullish momentum fading detected at bar {i}. "
+                                               f"RSI: {current_rsi:.1f}, MACD hist: {current_macd_hist:.4f}",
+                                               "MomentumScalpingStrategy")
+                            processed_data.iloc[
+                                i, processed_data.columns.get_loc('momentum_fading')] = 1  # Bullish momentum fading
+
+                    elif i > 0 and processed_data.iloc[i - 1]['momentum_state'] == -1:  # Previous bar was bearish
+                        # Check if momentum is fading
+                        momentum_fading = (
+                                current_rsi > 50 or
+                                current_macd_hist > prev_macd_hist or  # Histogram shrinking (in negative)
+                                (current_stoch_k > current_stoch_d and prev_stoch_k <= prev_stoch_d)
+                            # Bullish stoch cross
+                        )
+
+                        if momentum_fading:
+                            DBLogger.log_event("DEBUG",
+                                               f"Bearish momentum fading detected at bar {i}. "
+                                               f"RSI: {current_rsi:.1f}, MACD hist: {current_macd_hist:.4f}",
+                                               "MomentumScalpingStrategy")
+                            processed_data.iloc[
+                                i, processed_data.columns.get_loc('momentum_fading')] = -1  # Bearish momentum fading
+                except Exception as e:
+                    DBLogger.log_error("MomentumScalpingStrategy",
+                                       f"Error detecting momentum fading at bar {i}: {str(e)}",
+                                       exception=e)
+                    # Continue - momentum fading detection is not critical
+
+            except Exception as e:
+                DBLogger.log_error("MomentumScalpingStrategy",
+                                   f"Error processing bar {i}: {str(e)}",
+                                   exception=e)
+                # Continue to next bar
+
+        # Log signal processing summary
+        DBLogger.log_event("INFO",
+                           f"Signal identification complete. Processed {bar_count} bars, found {signal_count} signals.",
+                           "MomentumScalpingStrategy")
+
+        # Verify after processing
+        if signal_count > 0:
+            signal_bars = processed_data[processed_data['signal'] != 0]
+            if len(signal_bars) != signal_count:
+                DBLogger.log_event("WARNING",
+                                   f"Signal count mismatch. Expected {signal_count}, got {len(signal_bars)}.",
+                                   "MomentumScalpingStrategy")
+
+        return processed_data
+
+    # Fixed analyze method implementation
     def analyze(self, data):
         """Analyze market data and generate trading signals.
 
@@ -570,7 +832,7 @@ class MomentumScalpingStrategy(BaseStrategy):
         # Check if we have sufficient data after calculations
         if data.empty or 'signal' not in data.columns:
             DBLogger.log_event("WARNING", "Insufficient data for momentum scalping analysis after calculations",
-                            "MomentumScalpingStrategy")
+                               "MomentumScalpingStrategy")
             return []
 
         signals = []
@@ -579,36 +841,53 @@ class MomentumScalpingStrategy(BaseStrategy):
         last_candle = data.iloc[-1]
 
         # Check current spread if available
-        if hasattr(self.data_fetcher, 'connector'):
-            symbol_info = self.data_fetcher.connector.get_symbol_info(self.symbol)
-            if symbol_info and 'ask' in symbol_info and 'bid' in symbol_info:
-                current_spread = symbol_info['ask'] - symbol_info['bid']
-                # For XAU/USD, spread is typically in dollars
-                # Convert to pips (1 pip = $0.1 for gold)
-                spread_pips = current_spread * 10
+        if hasattr(self.data_fetcher, 'connector') and self.data_fetcher.connector is not None:
+            try:
+                symbol_info = self.data_fetcher.connector.get_symbol_info(self.symbol)
+                if symbol_info and 'ask' in symbol_info and 'bid' in symbol_info:
+                    current_spread = symbol_info['ask'] - symbol_info['bid']
+                    # For XAU/USD, spread is typically in dollars
+                    # Convert to pips (1 pip = $0.1 for gold)
+                    spread_pips = current_spread * 10
 
-                # Skip if spread is too wide
-                if spread_pips > self.max_spread:
-                    DBLogger.log_event("WARNING",
-                                    f"Current spread ({spread_pips:.1f} pips) exceeds maximum allowed ({self.max_spread:.1f} pips)",
-                                    "MomentumScalpingStrategy")
-                    return []
+                    # Skip if spread is too wide
+                    if spread_pips > self.max_spread:
+                        DBLogger.log_event("WARNING",
+                                           f"Current spread ({spread_pips:.1f} pips) exceeds maximum allowed ({self.max_spread:.1f} pips)",
+                                           "MomentumScalpingStrategy")
+                        return []
+            except Exception as e:
+                # Log but don't fail if spread check has an error
+                DBLogger.log_event("WARNING",
+                                   f"Error checking spread, continuing analysis: {str(e)}",
+                                   "MomentumScalpingStrategy")
 
         # Check if we're in a good session time (if session analysis is enabled)
+        session_ok = True
         if self.consider_session and 'good_session' in data.columns:
             if last_candle['good_session'] != 1:
+                session_ok = False
                 current_time = datetime.now().time()
                 DBLogger.log_event("DEBUG",
-                                f"Current time {current_time} is not in optimal trading session for momentum scalping",
-                                "MomentumScalpingStrategy")
-                # Continue with analysis but be more selective on signals
-                # (signal strength will be lower outside optimal sessions)
+                                   f"Current time {current_time} is not in optimal trading session for momentum scalping",
+                                   "MomentumScalpingStrategy")
+                # We'll still continue with analysis but note the suboptimal session
+
+        # Debug log the signal value
+        DBLogger.log_event("DEBUG", f"Signal in last candle: {last_candle['signal']}", "MomentumScalpingStrategy")
 
         # Check for trading signal on the last candle
         if last_candle['signal'] == 1:  # Buy signal
             # Create BUY signal
             entry_price = last_candle['close']
-            stop_loss = last_candle['stop_loss']
+
+            # FIXED: Calculate stop loss directly here if needed, don't rely on potentially stale value
+            # First, we check if the stop_loss value is valid (not 0.0 or NaN)
+            stop_loss = last_candle['stop_loss'] if 'stop_loss' in last_candle else None
+            if stop_loss is None or pd.isna(stop_loss) or stop_loss == 0 or stop_loss >= entry_price:
+                # Recalculate using ATR
+                atr = last_candle['atr'] if 'atr' in last_candle else (last_candle['high'] - last_candle['low']) * 0.1
+                stop_loss = entry_price - (atr * 1.5)  # Default 1.5 * ATR below entry
 
             # Ensure stop loss is valid
             if stop_loss >= entry_price:
@@ -619,39 +898,52 @@ class MomentumScalpingStrategy(BaseStrategy):
             take_profit_1r = entry_price + risk  # 1:1 reward-to-risk
             take_profit_2r = entry_price + (risk * 2)  # 2:1 reward-to-risk
 
+            # Get signal strength or default to 0.6 if not available
+            signal_strength = last_candle['signal_strength'] if 'signal_strength' in last_candle else 0.6
+
+            # Prepare metadata with safe fallbacks
+            metadata = {
+                'stop_loss': stop_loss,
+                'take_profit_1r': take_profit_1r,
+                'take_profit_2r': take_profit_2r,
+                'risk_amount': risk,
+                'rsi': last_candle.get('rsi', 0),
+                'macd_histogram': last_candle.get('macd_histogram', 0),
+                'stoch_k': last_candle.get('stoch_k', 0),
+                'stoch_d': last_candle.get('stoch_d', 0),
+                'momentum': last_candle.get('momentum', 0),
+                'volume_ratio': last_candle.get('volume_ratio', 0),
+                'atr': last_candle.get('atr', 0),
+                'session_quality': last_candle.get('good_session', 1) if 'good_session' in last_candle else session_ok,
+                'reason': 'Bullish momentum with RSI, MACD, and Stochastic confirmation'
+            }
+
             signal = self.create_signal(
                 signal_type="BUY",
                 price=entry_price,
-                strength=last_candle['signal_strength'],
-                metadata={
-                    'stop_loss': stop_loss,
-                    'take_profit_1r': take_profit_1r,
-                    'take_profit_2r': take_profit_2r,
-                    'risk_amount': risk,
-                    'rsi': last_candle['rsi'],
-                    'macd_histogram': last_candle['macd_histogram'],
-                    'stoch_k': last_candle['stoch_k'],
-                    'stoch_d': last_candle['stoch_d'],
-                    'momentum': last_candle['momentum'],
-                    'volume_ratio': last_candle['volume_ratio'],
-                    'atr': last_candle['atr'],
-                    'session_quality': last_candle['good_session'] if 'good_session' in last_candle else 1,
-                    'reason': 'Bullish momentum with RSI, MACD, and Stochastic confirmation'
-                }
+                strength=signal_strength,
+                metadata=metadata
             )
             signals.append(signal)
 
             DBLogger.log_event("INFO",
-                           f"Generated BUY signal for {self.symbol} at {entry_price}. "
-                           f"Stop loss: {stop_loss:.2f}, Take profit (1R): {take_profit_1r:.2f}, "
-                           f"RSI: {last_candle['rsi']:.1f}, MACD hist: {last_candle['macd_histogram']:.6f}, "
-                           f"Volume ratio: {last_candle['volume_ratio']:.1f}",
-                           "MomentumScalpingStrategy")
+                               f"Generated BUY signal for {self.symbol} at {entry_price}. "
+                               f"Stop loss: {stop_loss:.2f}, Take profit (1R): {take_profit_1r:.2f}, "
+                               f"RSI: {last_candle.get('rsi', 0):.1f}, MACD hist: {last_candle.get('macd_histogram', 0):.6f}, "
+                               f"Volume ratio: {last_candle.get('volume_ratio', 0):.1f}",
+                               "MomentumScalpingStrategy")
 
         elif last_candle['signal'] == -1:  # Sell signal
             # Create SELL signal
             entry_price = last_candle['close']
-            stop_loss = last_candle['stop_loss']
+
+            # FIXED: Calculate stop loss directly here if needed, don't rely on potentially stale value
+            # First, we check if the stop_loss value is valid (not 0.0 or NaN)
+            stop_loss = last_candle['stop_loss'] if 'stop_loss' in last_candle else None
+            if stop_loss is None or pd.isna(stop_loss) or stop_loss == 0 or stop_loss <= entry_price:
+                # Recalculate using ATR
+                atr = last_candle['atr'] if 'atr' in last_candle else (last_candle['high'] - last_candle['low']) * 0.1
+                stop_loss = entry_price + (atr * 1.5)  # Default 1.5 * ATR above entry
 
             # Ensure stop loss is valid
             if stop_loss <= entry_price:
@@ -662,42 +954,48 @@ class MomentumScalpingStrategy(BaseStrategy):
             take_profit_1r = entry_price - risk  # 1:1 reward-to-risk
             take_profit_2r = entry_price - (risk * 2)  # 2:1 reward-to-risk
 
+            # Get signal strength or default to 0.6 if not available
+            signal_strength = last_candle['signal_strength'] if 'signal_strength' in last_candle else 0.6
+
+            # Prepare metadata with safe fallbacks
+            metadata = {
+                'stop_loss': stop_loss,
+                'take_profit_1r': take_profit_1r,
+                'take_profit_2r': take_profit_2r,
+                'risk_amount': risk,
+                'rsi': last_candle.get('rsi', 0),
+                'macd_histogram': last_candle.get('macd_histogram', 0),
+                'stoch_k': last_candle.get('stoch_k', 0),
+                'stoch_d': last_candle.get('stoch_d', 0),
+                'momentum': last_candle.get('momentum', 0),
+                'volume_ratio': last_candle.get('volume_ratio', 0),
+                'atr': last_candle.get('atr', 0),
+                'session_quality': last_candle.get('good_session', 1) if 'good_session' in last_candle else session_ok,
+                'reason': 'Bearish momentum with RSI, MACD, and Stochastic confirmation'
+            }
+
             signal = self.create_signal(
                 signal_type="SELL",
                 price=entry_price,
-                strength=last_candle['signal_strength'],
-                metadata={
-                    'stop_loss': stop_loss,
-                    'take_profit_1r': take_profit_1r,
-                    'take_profit_2r': take_profit_2r,
-                    'risk_amount': risk,
-                    'rsi': last_candle['rsi'],
-                    'macd_histogram': last_candle['macd_histogram'],
-                    'stoch_k': last_candle['stoch_k'],
-                    'stoch_d': last_candle['stoch_d'],
-                    'momentum': last_candle['momentum'],
-                    'volume_ratio': last_candle['volume_ratio'],
-                    'atr': last_candle['atr'],
-                    'session_quality': last_candle['good_session'] if 'good_session' in last_candle else 1,
-                    'reason': 'Bearish momentum with RSI, MACD, and Stochastic confirmation'
-                }
+                strength=signal_strength,
+                metadata=metadata
             )
             signals.append(signal)
 
             DBLogger.log_event("INFO",
-                           f"Generated SELL signal for {self.symbol} at {entry_price}. "
-                           f"Stop loss: {stop_loss:.2f}, Take profit (1R): {take_profit_1r:.2f}, "
-                           f"RSI: {last_candle['rsi']:.1f}, MACD hist: {last_candle['macd_histogram']:.6f}, "
-                           f"Volume ratio: {last_candle['volume_ratio']:.1f}",
-                           "MomentumScalpingStrategy")
+                               f"Generated SELL signal for {self.symbol} at {entry_price}. "
+                               f"Stop loss: {stop_loss:.2f}, Take profit (1R): {take_profit_1r:.2f}, "
+                               f"RSI: {last_candle.get('rsi', 0):.1f}, MACD hist: {last_candle.get('macd_histogram', 0):.6f}, "
+                               f"Volume ratio: {last_candle.get('volume_ratio', 0):.1f}",
+                               "MomentumScalpingStrategy")
 
         # Also check for momentum fading signals (for exit purposes)
         # These can be used by the order manager to exit open trades
-        if last_candle['momentum_fading'] == 1:  # Bullish momentum fading
+        if 'momentum_fading' in last_candle and last_candle['momentum_fading'] == 1:  # Bullish momentum fading
             DBLogger.log_event("DEBUG",
-                           f"Detected bullish momentum fading on {self.symbol}. "
-                           f"RSI: {last_candle['rsi']:.1f}, MACD hist: {last_candle['macd_histogram']:.6f}",
-                           "MomentumScalpingStrategy")
+                               f"Detected bullish momentum fading on {self.symbol}. "
+                               f"RSI: {last_candle.get('rsi', 0):.1f}, MACD hist: {last_candle.get('macd_histogram', 0):.6f}",
+                               "MomentumScalpingStrategy")
 
             # Create "CLOSE" signal for any LONG positions
             signal = self.create_signal(
@@ -707,17 +1005,17 @@ class MomentumScalpingStrategy(BaseStrategy):
                 metadata={
                     'position_type': "BUY",  # Close long positions
                     'reason': 'Bullish momentum fading',
-                    'rsi': last_candle['rsi'],
-                    'macd_histogram': last_candle['macd_histogram']
+                    'rsi': last_candle.get('rsi', 0),
+                    'macd_histogram': last_candle.get('macd_histogram', 0)
                 }
             )
             signals.append(signal)
 
-        elif last_candle['momentum_fading'] == -1:  # Bearish momentum fading
+        elif 'momentum_fading' in last_candle and last_candle['momentum_fading'] == -1:  # Bearish momentum fading
             DBLogger.log_event("DEBUG",
-                           f"Detected bearish momentum fading on {self.symbol}. "
-                           f"RSI: {last_candle['rsi']:.1f}, MACD hist: {last_candle['macd_histogram']:.6f}",
-                           "MomentumScalpingStrategy")
+                               f"Detected bearish momentum fading on {self.symbol}. "
+                               f"RSI: {last_candle.get('rsi', 0):.1f}, MACD hist: {last_candle.get('macd_histogram', 0):.6f}",
+                               "MomentumScalpingStrategy")
 
             # Create "CLOSE" signal for any SHORT positions
             signal = self.create_signal(
@@ -727,8 +1025,8 @@ class MomentumScalpingStrategy(BaseStrategy):
                 metadata={
                     'position_type': "SELL",  # Close short positions
                     'reason': 'Bearish momentum fading',
-                    'rsi': last_candle['rsi'],
-                    'macd_histogram': last_candle['macd_histogram']
+                    'rsi': last_candle.get('rsi', 0),
+                    'macd_histogram': last_candle.get('macd_histogram', 0)
                 }
             )
             signals.append(signal)
