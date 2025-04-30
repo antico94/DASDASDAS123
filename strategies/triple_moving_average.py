@@ -97,8 +97,11 @@ class TripleMovingAverageStrategy(BaseStrategy):
         data['ema_above_sma'] = data['fast_ema'] > data['medium_sma']
 
         # Detect crossovers (changes in ema_above_sma status)
-        data['cross_up'] = (data['ema_above_sma'] & ~data['ema_above_sma'].shift(1).fillna(False)).astype(int)
-        data['cross_down'] = (~data['ema_above_sma'] & data['ema_above_sma'].shift(1).fillna(False)).astype(int)
+        shifted_ema_above = data['ema_above_sma'].shift(1)
+        filled_shifted_ema_above = shifted_ema_above.fillna(False).infer_objects(copy=False)
+
+        data['cross_up'] = (data['ema_above_sma'] & ~filled_shifted_ema_above).astype(int)
+        data['cross_down'] = (~data['ema_above_sma'] & filled_shifted_ema_above).astype(int)
 
         # Calculate trade signals based on crossovers and trend filter
         data['signal'] = 0  # Initialize with no signal

@@ -41,7 +41,7 @@ class BaseStrategy(ABC):
         """
         pass
 
-    def get_ohlc_data(self, count=200):
+    def get_ohlc_data(self, count=300):
         """Get OHLC data for analysis.
 
         Args:

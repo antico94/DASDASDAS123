@@ -224,6 +224,7 @@ class MT5DataFetcher:
 
         return synced_count
 
+    # In mt5_connector/data_fetcher.py
     def get_latest_data_to_dataframe(self, symbol, timeframe, count=300):
         """Get the latest OHLC data as a pandas DataFrame."""
         # Fetch data using a new session
@@ -257,8 +258,54 @@ class MT5DataFetcher:
             # Set timestamp as index
             if not df.empty:
                 df.set_index('timestamp', inplace=True)
-                df.sort_index(inplace=True)
+                # IMPORTANT: We need to sort the index properly after reversing the order from SQL
+                df.sort_index(inplace=True)  # Sort chronologically
+
+            # Log the actual data retrieved
+            DBLogger.log_event("DEBUG",
+                               f"Retrieved {len(df)} candles for {symbol} {timeframe}",
+                               "DataFetcher")
 
             return df
         finally:
             session.close()
+
+    # Add to mt5_connector/data_fetcher.py
+    def verify_data_sufficiency(self, symbol, timeframe, required_candles):
+        """Verify that sufficient historical data exists for the given symbol and timeframe.
+
+        Args:
+            symbol (str): Trading symbol
+            timeframe (str): Timeframe (e.g., 'M5', 'H1', 'H4')
+            required_candles (int): Minimum number of candles required
+
+        Returns:
+            tuple: (bool, int) - (is_sufficient, actual_candle_count)
+        """
+        try:
+            # Get the data
+            data = self.get_latest_data_to_dataframe(symbol, timeframe, required_candles)
+
+            # Check if we have enough candles
+            candle_count = len(data)
+            is_sufficient = candle_count >= required_candles
+
+            # Log the result
+            if is_sufficient:
+                DBLogger.log_event("DEBUG",
+                                   f"Data sufficiency check passed for {symbol} {timeframe}: "
+                                   f"have {candle_count} candles, need {required_candles}",
+                                   "DataFetcher")
+            else:
+                DBLogger.log_event("WARNING",
+                                   f"Insufficient data for {symbol} {timeframe}: "
+                                   f"have {candle_count} candles, need {required_candles}",
+                                   "DataFetcher")
+
+            return is_sufficient, candle_count
+
+        except Exception as e:
+            DBLogger.log_error("DataFetcher",
+                               f"Error verifying data sufficiency for {symbol} {timeframe}",
+                               exception=e)
+            return False, 0

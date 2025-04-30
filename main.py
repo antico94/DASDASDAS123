@@ -68,6 +68,10 @@ def initialize_database():
 def sync_historical_data(data_fetcher, force=False):
     """Sync historical price data for configured symbol and timeframes if needed.
 
+    Ensures sufficient history is available for all strategies, including:
+    - Triple MA (requires 200+ candles for 200 SMA)
+    - Ichimoku (requires extended history for cloud calculations)
+
     Args:
         data_fetcher: The data fetcher instance
         force (bool): Force sync even if not needed
@@ -75,29 +79,106 @@ def sync_historical_data(data_fetcher, force=False):
     # Define timeframes to sync
     timeframes = ['M5', 'M15', 'M30', 'H1', 'H4']
 
+    # Calculate minimum candles needed for different strategies
+    # Triple MA requires slow_period (200) + buffer
+    triple_ma_candles = Config.TRIPLE_MA_SLOW_PERIOD + 50  # 250 candles
+    # Ichimoku requires senkou_b + displacement + buffer
+    ichimoku_candles = Config.IC_SENKOU_B_PERIOD + 26 + 30  # 108 candles
+    # Get the maximum required candles across all strategies
+    min_required_candles = max(triple_ma_candles, ichimoku_candles, 300)  # Use 300 as safe minimum
+
+    # Calculate days needed for each timeframe to ensure sufficient history
+    # This mapping estimates how many days are needed for each timeframe to get min_required_candles
+    days_needed = {
+        'M5': min(90, max(10, int(min_required_candles * 5 / (60 * 24) * 1.5))),  # 5-min candles with 50% buffer
+        'M15': min(90, max(10, int(min_required_candles * 15 / (60 * 24) * 1.5))),  # 15-min candles with 50% buffer
+        'M30': min(90, max(15, int(min_required_candles * 30 / (60 * 24) * 1.5))),  # 30-min candles with 50% buffer
+        'H1': min(120, max(20, int(min_required_candles * 60 / (60 * 24) * 1.5))),  # 1-hour candles with 50% buffer
+        'H4': min(240, max(40, int(min_required_candles * 4 * 60 / (60 * 24) * 1.5)))  # 4-hour candles with 50% buffer
+    }
+
+    # Mapping of which timeframes are used by which strategies (for verification)
+    strategy_timeframes = {
+        'Triple MA': {
+            'timeframe': Config.TRIPLE_MA_TIMEFRAME,
+            'required_candles': triple_ma_candles
+        },
+        'Ichimoku': {
+            'timeframe': Config.IC_TIMEFRAME,
+            'required_candles': ichimoku_candles
+        }
+    }
+
     # Check if we need to sync
     last_sync_time = get_last_sync_time()
     now = datetime.utcnow()
 
-    # Sync if it's been more than 8 hours since last sync or if forced
-    if force or last_sync_time is None or (now - last_sync_time) > timedelta(hours=8):
+    # First, check if critical strategies have enough data
+    needs_sync = force
+    if not needs_sync:
+        for strategy_name, info in strategy_timeframes.items():
+            is_sufficient, count = data_fetcher.verify_data_sufficiency(
+                Config.SYMBOL, info['timeframe'], info['required_candles']
+            )
+            if not is_sufficient:
+                logging.warning(f"Forcing sync: Insufficient data for {strategy_name} strategy. "
+                                f"Have {count} candles, need {info['required_candles']}.")
+                needs_sync = True
+                break
+
+    # Also sync if it's been more than 8 hours
+    if not needs_sync and (last_sync_time is None or (now - last_sync_time) > timedelta(hours=8)):
+        needs_sync = True
+        logging.info("Regular sync needed (>8 hours since last sync)")
+
+    if needs_sync:
         logging.info(f"Syncing historical data for {Config.SYMBOL}...")
         DBLogger.log_event("INFO", f"Syncing historical data for {Config.SYMBOL}...", "data_sync")
 
         for timeframe in timeframes:
             try:
-                logging.info(f"Syncing {timeframe} data...")
+                days_back = days_needed.get(timeframe, 90)  # Default to 90 days if timeframe not in mapping
+
+                logging.info(f"Syncing {timeframe} data for {days_back} days back...")
+
+                # First validate we can connect to MT5
+                if not data_fetcher.connector._is_connected:
+                    data_fetcher.connector.ensure_connection()
+                    if not data_fetcher.connector._is_connected:
+                        error_msg = f"Cannot sync {timeframe} data - MT5 connection failed"
+                        logging.error(error_msg)
+                        DBLogger.log_error("data_sync", error_msg)
+                        continue
+
+                # Sync the data
                 synced_count = data_fetcher.sync_missing_data(
                     symbol=Config.SYMBOL,
                     timeframe=timeframe,
-                    days_back=60  # For Ichimoku we need more history
+                    days_back=days_back
                 )
+
                 if synced_count > 0:
-                    logging.info(f"Synced {synced_count} candles for {Config.SYMBOL} {timeframe}")
-                    DBLogger.log_event("INFO", f"Synced {synced_count} candles for {Config.SYMBOL} {timeframe}",
-                                       "data_sync")
+                    success_msg = f"Synced {synced_count} candles for {Config.SYMBOL} {timeframe} ({days_back} days back)"
+                    logging.info(success_msg)
+                    DBLogger.log_event("INFO", success_msg, "data_sync")
                 else:
                     logging.info(f"Data for {Config.SYMBOL} {timeframe} already up to date")
+
+                # Verify sufficiency for critical timeframes
+                for strategy_name, info in strategy_timeframes.items():
+                    if info['timeframe'] == timeframe:
+                        is_sufficient, count = data_fetcher.verify_data_sufficiency(
+                            Config.SYMBOL, timeframe, info['required_candles']
+                        )
+                        if not is_sufficient:
+                            warning_msg = (f"WARNING: Insufficient historical data for {strategy_name} after sync. "
+                                           f"Have {count} candles, need {info['required_candles']}. "
+                                           f"Strategy may not operate correctly.")
+                            logging.warning(warning_msg)
+                            DBLogger.log_event("WARNING", warning_msg, "data_sync")
+                        else:
+                            logging.info(f"Verified sufficient data for {strategy_name}: {count} candles available")
+
             except Exception as e:
                 logging.error(f"Error syncing {timeframe} data: {str(e)}")
                 DBLogger.log_error("data_sync", f"Error syncing {timeframe} data", exception=e)
@@ -106,6 +187,14 @@ def sync_historical_data(data_fetcher, force=False):
         update_last_sync_time(now)
     else:
         logging.info("Historical data is already up to date")
+
+        # Even if sync is not needed, still log data sufficiency for critical strategies
+        for strategy_name, info in strategy_timeframes.items():
+            is_sufficient, count = data_fetcher.verify_data_sufficiency(
+                Config.SYMBOL, info['timeframe'], info['required_candles']
+            )
+            logging.info(f"Data sufficiency for {strategy_name}: {count}/{info['required_candles']} candles "
+                         f"({'SUFFICIENT' if is_sufficient else 'INSUFFICIENT'})")
 
 
 def get_last_sync_time():
