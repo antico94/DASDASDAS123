@@ -340,8 +340,9 @@ class MomentumScalpingStrategy(BaseStrategy):
     def _identify_signals(self, data):
         """Identify momentum scalping signals according to the plan specifications.
 
-        This version includes extensive validation, error handling, and logging
-        to ensure that signals are reliably identified with no silent failures.
+        This method implements a high-precision momentum scalping strategy for XAU/USD,
+        focusing on capturing rapid price moves by trading in the direction of strong
+        price momentum and exiting as soon as that momentum fades.
 
         Args:
             data (pandas.DataFrame): OHLC data with required indicators
@@ -351,6 +352,7 @@ class MomentumScalpingStrategy(BaseStrategy):
 
         Raises:
             ValueError: If required data is missing or conditions can't be evaluated
+            RuntimeError: If critical signal setting operations fail
         """
         # Validate input data
         if data is None:
@@ -417,11 +419,21 @@ class MomentumScalpingStrategy(BaseStrategy):
                 current_close = processed_data.iloc[i]['close']
                 current_high = processed_data.iloc[i]['high']
                 current_low = processed_data.iloc[i]['low']
+                current_open = processed_data.iloc[i]['open']
 
-                # Previous values for comparison
+                # Previous values for comparison - crucial for identifying momentum patterns
                 prev_close = processed_data.iloc[i - 1]['close']
                 prev_high = processed_data.iloc[i - 1]['high']
                 prev_low = processed_data.iloc[i - 1]['low']
+                prev_open = processed_data.iloc[i - 1]['open']
+
+                # Calculate price change metrics
+                price_change = current_close - prev_close
+                price_change_percent = (price_change / prev_close) * 100
+
+                # Calculate candle patterns for additional confirmation
+                current_candle_body = abs(current_close - current_open)
+                prev_candle_body = abs(prev_close - prev_open)
 
                 # Get indicator values with explicit error checking
                 try:
@@ -429,7 +441,6 @@ class MomentumScalpingStrategy(BaseStrategy):
                     current_macd = processed_data.iloc[i]['macd']
                     current_macd_signal = processed_data.iloc[i]['macd_signal']
                     current_macd_hist = processed_data.iloc[i]['macd_histogram']
-                    # FIX: Get previous MACD histogram value for comparison
                     prev_macd_hist = processed_data.iloc[i - 1]['macd_histogram']
                     current_stoch_k = processed_data.iloc[i]['stoch_k']
                     current_stoch_d = processed_data.iloc[i]['stoch_d']
@@ -486,19 +497,39 @@ class MomentumScalpingStrategy(BaseStrategy):
 
                     # Calculate average candle size for comparison
                     avg_candle_size = (
-                            processed_data.iloc[lookback_start:i]['high'] - processed_data.iloc[lookback_start:i][
-                        'low']).mean()
+                                processed_data.iloc[lookback_start:i]['high'] - processed_data.iloc[lookback_start:i][
+                            'low']).mean()
                     current_candle_size = current_high - current_low
 
                     # Check if current candle is significantly larger (breakout condition)
                     large_candle = current_candle_size > (avg_candle_size * 1.5)
 
                     # Check for breakout above recent high or below recent low
-                    breakout_up = current_close > recent_high
-                    breakout_down = current_close < recent_low
+                    # Using previous values as reference points for breakout confirmation
+                    breakout_up = current_close > recent_high and current_close > prev_high
+                    breakout_down = current_close < recent_low and current_close < prev_low
+
+                    # Check for strong momentum candles - using previous price for comparison
+                    strong_bullish_candle = (
+                            current_close > prev_close and
+                            price_change_percent > 0.2 and  # 0.2% move is significant for XAU/USD
+                            current_candle_body > prev_candle_body * 1.5
+                    # Current candle body is 50% larger than previous
+                    )
+
+                    strong_bearish_candle = (
+                            current_close < prev_close and
+                            price_change_percent < -0.2 and  # -0.2% move is significant for XAU/USD
+                            current_candle_body > prev_candle_body * 1.5
+                    # Current candle body is 50% larger than previous
+                    )
+
+                    # Enhanced price action conditions
+                    bullish_price_action = breakout_up or large_candle or strong_bullish_candle
+                    bearish_price_action = breakout_down or large_candle or strong_bearish_candle
 
                     # Log price action for debugging
-                    if large_candle or breakout_up or breakout_down:
+                    if bullish_price_action or bearish_price_action:
                         action_type = []
                         if large_candle:
                             action_type.append("large candle")
@@ -506,10 +537,16 @@ class MomentumScalpingStrategy(BaseStrategy):
                             action_type.append("upward breakout")
                         if breakout_down:
                             action_type.append("downward breakout")
+                        if strong_bullish_candle:
+                            action_type.append("strong bullish candle")
+                        if strong_bearish_candle:
+                            action_type.append("strong bearish candle")
 
                         DBLogger.log_event("DEBUG",
                                            f"Price action detected at bar {i}: {', '.join(action_type)}. "
-                                           f"Close: {current_close}, Recent high: {recent_high}, Recent low: {recent_low}, "
+                                           f"Close: {current_close}, Prev close: {prev_close}, "
+                                           f"Recent high: {recent_high}, Recent low: {recent_low}, "
+                                           f"Change %: {price_change_percent:.2f}%, "
                                            f"Candle size: {current_candle_size:.2f}, Avg size: {avg_candle_size:.2f}",
                                            "MomentumScalpingStrategy")
                 except Exception as e:
@@ -521,13 +558,17 @@ class MomentumScalpingStrategy(BaseStrategy):
                 # MOMENTUM INDICATOR CONFIRMATION
                 # Define conditions with explicit error handling
                 try:
-                    # RSI condition
-                    bullish_rsi = current_rsi > self.rsi_threshold_high
-                    bearish_rsi = current_rsi < self.rsi_threshold_low
+                    # RSI condition with trend confirmation
+                    rsi_rising = current_rsi > processed_data.iloc[i - 2]['rsi']  # Compare with 2 bars ago for trend
+                    rsi_falling = current_rsi < processed_data.iloc[i - 2]['rsi']
+                    bullish_rsi = current_rsi > self.rsi_threshold_high and rsi_rising
+                    bearish_rsi = current_rsi < self.rsi_threshold_low and rsi_falling
 
-                    # MACD confirmation
-                    bullish_macd = current_macd_hist > 0 and current_macd > current_macd_signal
-                    bearish_macd = current_macd_hist < 0 and current_macd < current_macd_signal
+                    # MACD confirmation with trend confirmation
+                    macd_rising = current_macd_hist > prev_macd_hist
+                    macd_falling = current_macd_hist < prev_macd_hist
+                    bullish_macd = current_macd_hist > 0 and current_macd > current_macd_signal and macd_rising
+                    bearish_macd = current_macd_hist < 0 and current_macd < current_macd_signal and macd_falling
 
                     # Stochastic confirmation
                     stoch_bullish_cross = (current_stoch_k > current_stoch_d) and (prev_stoch_k <= prev_stoch_d)
@@ -535,12 +576,14 @@ class MomentumScalpingStrategy(BaseStrategy):
                     stoch_bullish = current_stoch_k > current_stoch_d or current_stoch_k > 80
                     stoch_bearish = current_stoch_k < current_stoch_d or current_stoch_k < 20
 
-                    # Momentum/ROC
-                    bullish_momentum = current_momentum > 100.2
-                    bearish_momentum = current_momentum < 99.8
+                    # Momentum/ROC with confirmation from price
+                    bullish_momentum = current_momentum > 100.2 and current_close > prev_close
+                    bearish_momentum = current_momentum < 99.8 and current_close < prev_close
 
-                    # Volume confirmation
-                    high_volume = current_volume_ratio >= self.volume_threshold
+                    # Volume confirmation with surge detection
+                    volume_surge = current_volume_ratio > processed_data.iloc[i - 1][
+                        'volume_ratio'] * 1.2  # 20% volume increase
+                    high_volume = current_volume_ratio >= self.volume_threshold and volume_surge
 
                     # Log indicator conditions for debugging the last few bars
                     if i >= len(processed_data) - 3:  # Only log last 3 bars for efficiency
@@ -551,7 +594,7 @@ class MomentumScalpingStrategy(BaseStrategy):
                                            f"Momentum={current_momentum:.2f}({bullish_momentum}), "
                                            f"Volume ratio={current_volume_ratio:.1f}({high_volume}), "
                                            f"Session={good_session}, "
-                                           f"Price action: BU={breakout_up}, LC={large_candle}",
+                                           f"Price action: BP={bullish_price_action}, BP={bearish_price_action}",
                                            "MomentumScalpingStrategy")
                 except Exception as e:
                     DBLogger.log_error("MomentumScalpingStrategy",
@@ -567,7 +610,7 @@ class MomentumScalpingStrategy(BaseStrategy):
                         (stoch_bullish or stoch_bullish_cross) and  # Using stochastic crossover signal
                         bullish_momentum and
                         high_volume and
-                        (breakout_up or large_candle) and
+                        bullish_price_action and
                         good_session
                 )
 
@@ -578,7 +621,7 @@ class MomentumScalpingStrategy(BaseStrategy):
                         (stoch_bearish or stoch_bearish_cross) and  # Using stochastic crossover signal
                         bearish_momentum and
                         high_volume and
-                        (breakout_down or large_candle) and
+                        bearish_price_action and
                         good_session
                 )
 
@@ -600,13 +643,12 @@ class MomentumScalpingStrategy(BaseStrategy):
                     # Calculate signal strength based on multiple factors
                     try:
                         strength_factors = [
-                            (current_rsi - 50) / 25,  # Scale 0-1 based on RSI strength
-                            current_macd_hist / processed_data.iloc[i]['atr'] if 'atr' in processed_data.columns and
-                                                                                 processed_data.iloc[i][
-                                                                                     'atr'] > 0 else 0.5,
-                            # Scale relative to volatility
-                            (current_stoch_k - 50) / 50,  # Scale based on stochastic
-                            (current_volume_ratio - 1) / self.volume_threshold  # Volume strength
+                            min(1.0, max(0, (current_rsi - 50) / 25)),  # Scale 0-1 based on RSI strength
+                            min(1.0, max(0, current_macd_hist / processed_data.iloc[i][
+                                'atr'] if 'atr' in processed_data.columns and processed_data.iloc[i][
+                                'atr'] > 0 else 0.5)),  # Scale relative to volatility
+                            min(1.0, max(0, (current_stoch_k - 50) / 50)),  # Scale based on stochastic
+                            min(1.0, max(0, (current_volume_ratio - 1) / self.volume_threshold))  # Volume strength
                         ]
 
                         # Add extra strength for stochastic crossover, especially from oversold
@@ -614,17 +656,11 @@ class MomentumScalpingStrategy(BaseStrategy):
                             crossover_from_oversold = prev_stoch_k < 20
                             strength_factors.append(0.2 if crossover_from_oversold else 0.1)
 
-                        # Cap each factor at 1.0 for robustness
-                        capped_factors = [min(1.0, max(0, factor)) for factor in strength_factors]
-
-                        # Average the factors and cap at 1.0
-                        if capped_factors:
-                            signal_strength = sum(capped_factors) / len(capped_factors)
-                        else:
-                            signal_strength = 0.6  # Default if factors can't be calculated
+                        # Average the factors
+                        signal_strength = min(1.0, sum(strength_factors) / len(strength_factors))
 
                         DBLogger.log_event("DEBUG",
-                                           f"Signal strength factors: {capped_factors}, "
+                                           f"Signal strength factors: {strength_factors}, "
                                            f"Final strength: {signal_strength:.2f}",
                                            "MomentumScalpingStrategy")
                     except Exception as e:
@@ -678,13 +714,12 @@ class MomentumScalpingStrategy(BaseStrategy):
                     # Calculate signal strength based on multiple factors
                     try:
                         strength_factors = [
-                            (50 - current_rsi) / 25,  # Scale 0-1 based on RSI strength
-                            -current_macd_hist / processed_data.iloc[i]['atr'] if 'atr' in processed_data.columns and
-                                                                                  processed_data.iloc[i][
-                                                                                      'atr'] > 0 else 0.5,
-                            # Scale relative to volatility
-                            (50 - current_stoch_k) / 50,  # Scale based on stochastic
-                            (current_volume_ratio - 1) / self.volume_threshold  # Volume strength
+                            min(1.0, max(0, (50 - current_rsi) / 25)),  # Scale 0-1 based on RSI strength
+                            min(1.0, max(0, -current_macd_hist / processed_data.iloc[i][
+                                'atr'] if 'atr' in processed_data.columns and processed_data.iloc[i][
+                                'atr'] > 0 else 0.5)),  # Scale relative to volatility
+                            min(1.0, max(0, (50 - current_stoch_k) / 50)),  # Scale based on stochastic
+                            min(1.0, max(0, (current_volume_ratio - 1) / self.volume_threshold))  # Volume strength
                         ]
 
                         # Add extra strength for stochastic crossover, especially from overbought
@@ -692,17 +727,11 @@ class MomentumScalpingStrategy(BaseStrategy):
                             crossover_from_overbought = prev_stoch_k > 80
                             strength_factors.append(0.2 if crossover_from_overbought else 0.1)
 
-                        # Cap each factor at 1.0 for robustness
-                        capped_factors = [min(1.0, max(0, factor)) for factor in strength_factors]
-
-                        # Average the factors and cap at 1.0
-                        if capped_factors:
-                            signal_strength = sum(capped_factors) / len(capped_factors)
-                        else:
-                            signal_strength = 0.6  # Default if factors can't be calculated
+                        # Average the factors
+                        signal_strength = min(1.0, sum(strength_factors) / len(strength_factors))
 
                         DBLogger.log_event("DEBUG",
-                                           f"Signal strength factors: {capped_factors}, "
+                                           f"Signal strength factors: {strength_factors}, "
                                            f"Final strength: {signal_strength:.2f}",
                                            "MomentumScalpingStrategy")
                     except Exception as e:
@@ -770,7 +799,7 @@ class MomentumScalpingStrategy(BaseStrategy):
                                 current_rsi > 50 or
                                 current_macd_hist > prev_macd_hist or  # Histogram shrinking (in negative)
                                 (current_stoch_k > current_stoch_d and prev_stoch_k <= prev_stoch_d)
-                            # Bullish stoch cross
+                        # Bullish stoch cross
                         )
 
                         if momentum_fading:
@@ -807,7 +836,6 @@ class MomentumScalpingStrategy(BaseStrategy):
 
         return processed_data
 
-    # Fixed analyze method implementation
     def analyze(self, data):
         """Analyze market data and generate trading signals.
 
