@@ -497,8 +497,8 @@ class MomentumScalpingStrategy(BaseStrategy):
 
                     # Calculate average candle size for comparison
                     avg_candle_size = (
-                                processed_data.iloc[lookback_start:i]['high'] - processed_data.iloc[lookback_start:i][
-                            'low']).mean()
+                            processed_data.iloc[lookback_start:i]['high'] - processed_data.iloc[lookback_start:i][
+                        'low']).mean()
                     current_candle_size = current_high - current_low
 
                     # Check if current candle is significantly larger (breakout condition)
@@ -514,14 +514,14 @@ class MomentumScalpingStrategy(BaseStrategy):
                             current_close > prev_close and
                             price_change_percent > 0.2 and  # 0.2% move is significant for XAU/USD
                             current_candle_body > prev_candle_body * 1.5
-                    # Current candle body is 50% larger than previous
+                        # Current candle body is 50% larger than previous
                     )
 
                     strong_bearish_candle = (
                             current_close < prev_close and
                             price_change_percent < -0.2 and  # -0.2% move is significant for XAU/USD
                             current_candle_body > prev_candle_body * 1.5
-                    # Current candle body is 50% larger than previous
+                        # Current candle body is 50% larger than previous
                     )
 
                     # Enhanced price action conditions
@@ -624,6 +624,54 @@ class MomentumScalpingStrategy(BaseStrategy):
                         bearish_price_action and
                         good_session
                 )
+
+                # ---------- ENHANCED DEBUGGING START ----------
+                # Create detailed condition check logging for every bar
+                # Format: "Condition ✅/❌ (Actual Value)"
+
+                # Prepare condition checklist for bullish signals
+                bullish_checks = [
+                    f"RSI > {self.rsi_threshold_high} and rising: {'✅' if bullish_rsi else '❌'} ({current_rsi:.1f}, {'rising' if rsi_rising else 'not rising'})",
+                    f"MACD Histogram > 0 and rising: {'✅' if bullish_macd else '❌'} ({current_macd_hist:.4f}, {'rising' if macd_rising else 'not rising'})",
+                    f"Stochastic bullish: {'✅' if stoch_bullish or stoch_bullish_cross else '❌'} (K:{current_stoch_k:.1f}, D:{current_stoch_d:.1f}, Cross:{stoch_bullish_cross})",
+                    f"Momentum > 100.2: {'✅' if bullish_momentum else '❌'} ({current_momentum:.2f})",
+                    f"Volume high & surging: {'✅' if high_volume else '❌'} (Ratio:{current_volume_ratio:.2f}, Surge:{volume_surge})",
+                    f"Bullish price action: {'✅' if bullish_price_action else '❌'} (Breakout:{breakout_up}, Large:{large_candle}, Strong:{strong_bullish_candle})",
+                    f"Good session: {'✅' if good_session else '❌'}"
+                ]
+
+                # Prepare condition checklist for bearish signals
+                bearish_checks = [
+                    f"RSI < {self.rsi_threshold_low} and falling: {'✅' if bearish_rsi else '❌'} ({current_rsi:.1f}, {'falling' if rsi_falling else 'not falling'})",
+                    f"MACD Histogram < 0 and falling: {'✅' if bearish_macd else '❌'} ({current_macd_hist:.4f}, {'falling' if macd_falling else 'not falling'})",
+                    f"Stochastic bearish: {'✅' if stoch_bearish or stoch_bearish_cross else '❌'} (K:{current_stoch_k:.1f}, D:{current_stoch_d:.1f}, Cross:{stoch_bearish_cross})",
+                    f"Momentum < 99.8: {'✅' if bearish_momentum else '❌'} ({current_momentum:.2f})",
+                    f"Volume high & surging: {'✅' if high_volume else '❌'} (Ratio:{current_volume_ratio:.2f}, Surge:{volume_surge})",
+                    f"Bearish price action: {'✅' if bearish_price_action else '❌'} (Breakout:{breakout_down}, Large:{large_candle}, Strong:{strong_bearish_candle})",
+                    f"Good session: {'✅' if good_session else '❌'}"
+                ]
+
+                # After your bullish_checks and bearish_checks definitions...
+
+                # Print Bullish Checks
+                print("\n=== Momentum Scalping - Bullish Checks ===")
+                for idx, check in enumerate(bullish_checks, start=1):
+                    print(f"{idx}. {check}")
+
+                # Print Bearish Checks
+                print("\n=== Momentum Scalping - Bearish Checks ===")
+                for idx, check in enumerate(bearish_checks, start=1):
+                    print(f"{idx}. {check}")
+
+                # Log detailed conditions for every bar being analyzed
+                DBLogger.log_event("DEBUG",
+                                   f"Signal conditions at bar {i} (Time: {processed_data.index[i] if hasattr(processed_data, 'index') else 'N/A'}) - Price: {current_close:.2f}\n"
+                                   f"BULLISH CHECKS:\n" + "\n".join(bullish_checks) + "\n"
+                                                                                      f"BEARISH CHECKS:\n" + "\n".join(
+                                       bearish_checks) + "\n"
+                                                         f"FINAL RESULT: {'BUY SIGNAL' if bullish_conditions else 'SELL SIGNAL' if bearish_conditions else 'NO SIGNAL'}",
+                                   "MomentumScalpingStrategy")
+                # ---------- ENHANCED DEBUGGING END ----------
 
                 # Debug log bullish conditions for the last few bars
                 if i >= len(processed_data) - 3:  # Only log last 3 bars
@@ -782,7 +830,7 @@ class MomentumScalpingStrategy(BaseStrategy):
                                 current_rsi < 50 or
                                 current_macd_hist < prev_macd_hist or  # Histogram shrinking
                                 (current_stoch_k < current_stoch_d and prev_stoch_k >= prev_stoch_d)
-                        # Bearish stoch cross
+                            # Bearish stoch cross
                         )
 
                         if momentum_fading:
@@ -799,7 +847,7 @@ class MomentumScalpingStrategy(BaseStrategy):
                                 current_rsi > 50 or
                                 current_macd_hist > prev_macd_hist or  # Histogram shrinking (in negative)
                                 (current_stoch_k > current_stoch_d and prev_stoch_k <= prev_stoch_d)
-                        # Bullish stoch cross
+                            # Bullish stoch cross
                         )
 
                         if momentum_fading:
