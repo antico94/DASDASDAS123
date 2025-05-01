@@ -300,6 +300,38 @@ class TestMomentumScalpingStrategy(unittest.TestCase):
         volume_ratio_values = result['volume_ratio'].dropna()
         self.assertTrue(all(val > 0 for val in volume_ratio_values))
 
+    def test_volume_ratio_with_zero_ma(self):
+        """Test volume ratio calculation handles zero moving average properly."""
+        # Create a test DataFrame with volume data where MA will be zero
+        test_data = pd.DataFrame({
+            'open': [1900.0] * 25,
+            'high': [1901.0] * 25,
+            'low': [1899.0] * 25,
+            'close': [1900.0] * 25,
+            'volume': [1000.0] * 19 + [0.0] * 5 + [1000.0],  # Create a scenario where MA will be zero
+            'tick_volume': [100] * 25,
+            'spread': [3] * 25
+        }, index=pd.date_range('2023-01-01', periods=25))
+
+        # Calculate volume metrics
+        result = self.strategy._calculate_volume_metrics(test_data)
+
+        # Check that volume_ratio doesn't have NaN values
+        self.assertFalse(result['volume_ratio'].isna().any(),
+                         "volume_ratio should not contain NaN values")
+
+        # Specifically check the last row where we'd expect issues
+        last_volume_ratio = result.iloc[-1]['volume_ratio']
+        self.assertFalse(np.isnan(last_volume_ratio),
+                         f"Last row volume_ratio should not be NaN, got {last_volume_ratio}")
+
+        # For rows where volume_ma is zero, volume_ratio should be set to 1.0
+        zero_ma_rows = result[result['volume_ma'] == 0]
+        if not zero_ma_rows.empty:
+            for idx, row in zero_ma_rows.iterrows():
+                self.assertEqual(row['volume_ratio'], 1.0,
+                                 f"volume_ratio should be 1.0 when volume_ma is zero, got {row['volume_ratio']}")
+
     def test_add_session_info(self):
         """Test adding session information."""
         # Calculate session info

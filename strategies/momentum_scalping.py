@@ -299,13 +299,39 @@ class MomentumScalpingStrategy(BaseStrategy):
         data['volume_ma'] = data['volume'].rolling(window=20).mean()
 
         # Calculate relative volume (current volume vs average)
-        data['volume_ratio'] = data['volume'] / data['volume_ma']
+        # Initialize with zeros to avoid NaN issues
+        data['volume_ratio'] = 0.0
 
-        # Flag high volume bars - fix astype error
-        data['high_volume'] = np.where(data['volume_ratio'] >= self.volume_threshold, 1, 0)
+        # Only calculate ratio where we have valid moving averages
+        valid_indices = data.index[~data['volume_ma'].isna() & (data['volume_ma'] > 0)]
+        if len(valid_indices) > 0:
+            data.loc[valid_indices, 'volume_ratio'] = data.loc[valid_indices, 'volume'] / data.loc[
+                valid_indices, 'volume_ma']
+
+        # Flag high volume bars - using numpy for consistent array operations
+        # Only mark high volume where we have valid ratios
+        data['high_volume'] = 0
+        valid_ratio_indices = data.index[data['volume_ratio'] > 0]
+        if len(valid_ratio_indices) > 0:
+            data.loc[valid_ratio_indices, 'high_volume'] = np.where(
+                data.loc[valid_ratio_indices, 'volume_ratio'] >= self.volume_threshold,
+                1,
+                0
+            )
 
         # Calculate volume change
         data['volume_change'] = data['volume'].pct_change()
+        # Fill NaN in first row of volume_change with 0
+        data['volume_change'] = data['volume_change'].fillna(0)
+
+        # Log warning when insufficient data is available
+        invalid_count = len(data) - len(valid_indices)
+        if invalid_count > 0:
+            DBLogger.log_event(
+                "WARNING",
+                f"Insufficient volume data for {invalid_count} of {len(data)} bars. Some volume metrics unavailable.",
+                "MomentumScalpingStrategy"
+            )
 
         return data
 
@@ -407,11 +433,15 @@ class MomentumScalpingStrategy(BaseStrategy):
         DBLogger.log_event("DEBUG", f"Processing {len(processed_data)} bars for signal identification",
                            "MomentumScalpingStrategy")
 
-        # Process each bar starting from index 5 (to have enough lookback)
+        # Calculate the minimum required bar for valid indicators
+        # For a 20-period volume MA, we need at least 20 bars
+        min_bar_required = 20
+
+        # Process each bar starting from the min_bar_required (to have enough lookback)
         bar_count = 0
         signal_count = 0
 
-        for i in range(5, len(processed_data)):
+        for i in range(min_bar_required, len(processed_data)):
             try:
                 bar_count += 1
 
@@ -580,10 +610,23 @@ class MomentumScalpingStrategy(BaseStrategy):
                     bullish_momentum = current_momentum > 100.2 and current_close > prev_close
                     bearish_momentum = current_momentum < 99.8 and current_close < prev_close
 
-                    # Volume confirmation with surge detection
-                    volume_surge = current_volume_ratio > processed_data.iloc[i - 1][
-                        'volume_ratio'] * 1.2  # 20% volume increase
-                    high_volume = current_volume_ratio >= self.volume_threshold and volume_surge
+                    # Volume confirmation with surge detection - with proper handling for zeros
+                    # A zero value means invalid/missing data
+                    if current_volume_ratio <= 0:
+                        volume_surge = False
+                        high_volume = False
+                        DBLogger.log_event("DEBUG",
+                                           f"Bar {i}: Invalid volume ratio data - can't evaluate volume conditions",
+                                           "MomentumScalpingStrategy")
+                    else:
+                        # Check previous volume ratio for surge calculation
+                        prev_volume_ratio = processed_data.iloc[i - 1]['volume_ratio']
+                        if prev_volume_ratio <= 0:
+                            volume_surge = False  # Can't calculate surge without previous data
+                        else:
+                            volume_surge = current_volume_ratio > prev_volume_ratio * 1.2  # 20% volume increase
+
+                        high_volume = current_volume_ratio >= self.volume_threshold and volume_surge
 
                     # Log indicator conditions for debugging the last few bars
                     if i >= len(processed_data) - 3:  # Only log last 3 bars for efficiency
@@ -842,7 +885,6 @@ class MomentumScalpingStrategy(BaseStrategy):
                                 i, processed_data.columns.get_loc('momentum_fading')] = 1  # Bullish momentum fading
 
                     elif i > 0 and processed_data.iloc[i - 1]['momentum_state'] == -1:  # Previous bar was bearish
-                        # Check if momentum is fading
                         momentum_fading = (
                                 current_rsi > 50 or
                                 current_macd_hist > prev_macd_hist or  # Histogram shrinking (in negative)
@@ -862,7 +904,6 @@ class MomentumScalpingStrategy(BaseStrategy):
                                        f"Error detecting momentum fading at bar {i}: {str(e)}",
                                        exception=e)
                     # Continue - momentum fading detection is not critical
-
             except Exception as e:
                 DBLogger.log_error("MomentumScalpingStrategy",
                                    f"Error processing bar {i}: {str(e)}",
