@@ -695,16 +695,16 @@ class MomentumScalpingStrategy(BaseStrategy):
                 ]
 
                 # After your bullish_checks and bearish_checks definitions...
+                if i == len(processed_data) - 1:
+                    # Print Bullish Checks
+                    print("\n=== Momentum Scalping - Bullish Checks ===")
+                    for idx, check in enumerate(bullish_checks, start=1):
+                        print(f"{idx}. {check}")
 
-                # Print Bullish Checks
-                print("\n=== Momentum Scalping - Bullish Checks ===")
-                for idx, check in enumerate(bullish_checks, start=1):
-                    print(f"{idx}. {check}")
-
-                # Print Bearish Checks
-                print("\n=== Momentum Scalping - Bearish Checks ===")
-                for idx, check in enumerate(bearish_checks, start=1):
-                    print(f"{idx}. {check}")
+                    # Print Bearish Checks
+                    print("\n=== Momentum Scalping - Bearish Checks ===")
+                    for idx, check in enumerate(bearish_checks, start=1):
+                        print(f"{idx}. {check}")
 
                 # Log detailed conditions for every bar being analyzed
                 DBLogger.log_event("DEBUG",
